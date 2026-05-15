@@ -65,13 +65,17 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 		if loadErr != nil {
 			return fmt.Errorf("load public key %d: %w", i+1, loadErr)
 		}
+		fingerprint, fpErr := SPKIFingerprint(pub)
+		if fpErr != nil {
+			return fmt.Errorf("fingerprint key %d: %w", i+1, fpErr)
+		}
 		wrapped, wrapErr := WrapSymmetricKey(symKey, pub)
 		if wrapErr != nil {
 			return fmt.Errorf("wrap key for recipient %d: %w", i+1, wrapErr)
 		}
 		wkds[i] = &WrappedKeyData{
 			FileID:     fileID,
-			KeyID:      fmt.Sprintf("key-%d", i+1),
+			KeyID:      fingerprint,
 			Algorithm:  "xchacha20poly1305",
 			KEKAlg:     "rsa-oaep-sha256",
 			WrappedKey: wrapped,

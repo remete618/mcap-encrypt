@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -139,6 +140,18 @@ func GenerateKeyPair(basename string) error {
 		return fmt.Errorf("write public key: %w", err)
 	}
 	return nil
+}
+
+// SPKIFingerprint returns the hex-encoded SHA-256 of the SPKI (SubjectPublicKeyInfo)
+// encoding of pub. This is used as the key_id in WrappedKeyData so decoders can
+// identify which attachment belongs to their private key without trying every one.
+func SPKIFingerprint(pub *rsa.PublicKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return "", fmt.Errorf("marshal SPKI: %w", err)
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func LoadPublicKey(path string) (*rsa.PublicKey, error) {

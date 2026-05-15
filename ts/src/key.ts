@@ -69,6 +69,17 @@ export function derToPem(label: string, der: ArrayBuffer): string {
   return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----\n`;
 }
 
+// spkiFingerprint returns the lowercase hex SHA-256 of the SPKI bytes of a
+// public key PEM. Used as the key_id in WrappedKeyData so decoders can
+// identify which attachment belongs to their private key without trying every one.
+export async function spkiFingerprint(publicKeyPem: string): Promise<string> {
+  const der = pemToDer(publicKeyPem);
+  const hashBuf = await crypto.subtle.digest("SHA-256", der);
+  return Array.from(new Uint8Array(hashBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export async function wrapSymmetricKey(symKey: Uint8Array, publicKeyPem: string): Promise<Uint8Array> {
   const der = pemToDer(publicKeyPem);
   const key = await crypto.subtle.importKey(

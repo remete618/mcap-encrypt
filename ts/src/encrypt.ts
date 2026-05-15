@@ -19,6 +19,7 @@ import {
 import { encodeEncryptedChunk, type EncryptedChunk } from "./chunk.js";
 import {
   wrapSymmetricKey,
+  spkiFingerprint,
   encodeWrappedKeyData,
   ATTACHMENT_NAME,
   ATTACHMENT_MEDIA_TYPE,
@@ -110,10 +111,11 @@ export async function encryptMcap(
   // Wrap the symmetric key for each recipient; store as separate attachments.
   const keyAttachments: Uint8Array[] = [];
   for (let i = 0; i < pubKeys.length; i++) {
+    const keyId = await spkiFingerprint(pubKeys[i]!);
     const wrappedKey = await wrapSymmetricKey(symKey, pubKeys[i]!);
     const wkdBytes = encodeWrappedKeyData({
       fileId,
-      keyId: `key-${i + 1}`,
+      keyId,
       algorithm: "xchacha20poly1305",
       kekAlg: "rsa-oaep-sha256",
       wrappedKey,
