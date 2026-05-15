@@ -12,6 +12,8 @@ import (
 	"github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
 )
 
+var version = "dev"
+
 const usage = `mcap-encrypt: encrypt and decrypt MCAP files with XChaCha20-Poly1305 + RSA-2048
 
 Usage:
@@ -38,6 +40,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "version", "--version", "-v":
+		fmt.Println("mcap-encrypt", version)
 	case "keygen":
 		runKeygen(os.Args[2:])
 	case "encrypt":
