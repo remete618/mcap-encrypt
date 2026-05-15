@@ -62,5 +62,8 @@ jobs:
       - name: Type check
         run: cd ts && npm run typecheck
 
+      - name: Audit
+        run: cd ts && npm audit --audit-level=high
+
       - name: Test
         run: cd ts && npm test
