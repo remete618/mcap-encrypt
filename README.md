@@ -7,7 +7,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
 
-> 🔒 Encrypts every chunk in an MCAP file with XChaCha20-Poly1305. The symmetric key is wrapped with an RSA-2048 public key and stored inside the file. Schemas and channels stay plaintext so tooling can inspect file structure without the private key. Available as a Go CLI, Go library, and TypeScript/Node.js library. Files encrypted by one implementation can be decrypted by the other.
+> 🔒 Encrypts every chunk in an MCAP file with XChaCha20-Poly1305. One symmetric key per file is wrapped with each recipient's RSA-2048 public key and stored as attachments; any matching private key decrypts. Schemas and channels stay plaintext so tooling can inspect file structure without a key. Available as a Go CLI, Go library, and TypeScript/Node.js library. Files encrypted by one implementation can be decrypted by the other.
 
 ---
 
@@ -37,10 +37,10 @@ MCAP is the standard container format for robotics sensor data (ROS 2, Foxglove,
 
 1. A random 32-byte symmetric key is generated per file.
 2. Every chunk in the MCAP is encrypted with XChaCha20-Poly1305 (authenticated encryption).
-3. The symmetric key is RSA-OAEP-SHA-256 wrapped with the recipient's public key and stored as an attachment inside the encrypted file.
+3. The symmetric key is RSA-OAEP-SHA-256 wrapped with each recipient's public key. Each wrapped copy is stored as a separate attachment before the first encrypted chunk.
 4. Schemas and channel metadata remain in plaintext so tools can inspect topics and message types without decrypting.
 
-Decryption is single-pass: the wrapped key attachment is placed before the first encrypted chunk so a decoder can start streaming immediately.
+Decryption is single-pass: all wrapped-key attachments appear before the first encrypted chunk so a decoder can start streaming immediately after finding one that matches.
 
 ---
 
@@ -52,13 +52,13 @@ Decryption is single-pass: the wrapped key attachment is placed before the first
 |---|---|---|
 | Message encryption | XChaCha20-Poly1305 | Per-chunk authenticated encryption |
 | Key wrapping | RSA-2048-OAEP-SHA-256 | Protects the symmetric key at rest |
-| Integrity binding | AEAD additional data (AAD) | Chunk time bounds bound to ciphertext; prevents chunk-swapping attacks |
+| Integrity binding | AEAD additional data (AAD) | Chunk time bounds bound to ciphertext; detects modification of AAD fields |
 
 **Properties:**
 
 - Each file gets a fresh random 32-byte key and a fresh 24-byte nonce per chunk. Nonce reuse is not possible.
 - The AEAD tag (16 bytes, appended to each encrypted chunk) detects any tampering with ciphertext or the AAD fields.
-- Chunk time bounds (`message_start_time`, `message_end_time`) are used as AAD. A chunk from one file cannot be spliced into another without breaking authentication.
+- Chunk time bounds (`message_start_time`, `message_end_time`) are used as AAD. Modifying these fields or the ciphertext breaks authentication. Note: two chunks with identical timestamps from the same file are not distinguishable by AAD alone; chunk-index binding is planned for a future format version.
 - The private key is never written to disk by this tool.
 
 **What it does not protect:**
@@ -93,7 +93,7 @@ go build -o mcap-encrypt ./cmd/mcap-encrypt
 go get github.com/remete618/mcap-encrypt/pkg/mcapencrypt
 ```
 
-Requires Go 1.21+.
+Requires Go 1.26+.
 
 ### TypeScript / Node.js
 
@@ -127,12 +127,12 @@ If the output file already exists, both commands fail with an error. Pass `--for
 
 ## CLI reference
 
-> **TLDR:** Three subcommands. All are safe-by-default (no silent overwrites, magic-byte check on input).
+> **TLDR:** Three subcommands. Multi-recipient via repeatable `--key`. Progress spinner with throughput. Safe-by-default (no silent overwrites, magic-byte check on input).
 
 ```
 mcap-encrypt keygen  --out <basename>
-mcap-encrypt encrypt --key <pub.pem>  [--force] <input.mcap>  <output.mcap>
-mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap>  <output.mcap>
+mcap-encrypt encrypt --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap> <output.mcap>
 ```
 
 ### keygen
@@ -145,16 +145,23 @@ Generates an RSA-2048 key pair.
 
 ### encrypt
 
-Encrypts a standard MCAP file. Input must be a chunked MCAP (non-chunked files are rejected with a clear error). Validates magic bytes before starting.
+Encrypts a standard MCAP file. Input must be a chunked MCAP (non-chunked files are rejected with a clear error). Validates magic bytes before starting. Chunks are encrypted in parallel using all available CPU cores.
 
 | Flag | Description |
 |---|---|
-| `--key <pub.pem>` | Path to RSA public key. Required. |
+| `--key <pub.pem>` | Path to RSA public key. Repeatable for multi-recipient. Required. |
 | `--force` | Overwrite output file if it exists. |
+
+To encrypt for multiple recipients, repeat `--key`:
+
+```bash
+mcap-encrypt encrypt --key alice.pub.pem --key bob.pub.pem input.mcap encrypted.mcap
+# Either alice.priv.pem or bob.priv.pem can decrypt the result.
+```
 
 ### decrypt
 
-Decrypts an encrypted MCAP file. Produces a standard, fully-indexed MCAP readable by any MCAP-compatible tool.
+Decrypts an encrypted MCAP file. Produces a standard, fully-indexed MCAP readable by any MCAP-compatible tool. The CLI prints a progress spinner and reports throughput on completion.
 
 | Flag | Description |
 |---|---|
@@ -165,7 +172,7 @@ Decrypts an encrypted MCAP file. Produces a standard, fully-indexed MCAP readabl
 
 ## Go library
 
-> **TLDR:** Three functions: `GenerateKeyPair`, `Encrypt`, `Decrypt`. All take file paths. Thread-safe.
+> **TLDR:** Four functions: `GenerateKeyPair`, `Encrypt`, `EncryptMulti`, `Decrypt`. All take file paths. Thread-safe; chunks encrypted in parallel.
 
 ```go
 import "github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
@@ -173,8 +180,14 @@ import "github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
 // Generate a key pair, writes <base>.pub.pem and <base>.priv.pem
 if err := mcapencrypt.GenerateKeyPair("mykey"); err != nil { ... }
 
-// Encrypt: input must be a chunked MCAP
+// Encrypt for a single recipient
 if err := mcapencrypt.Encrypt("input.mcap", "encrypted.mcap", "mykey.pub.pem"); err != nil { ... }
+
+// Encrypt for multiple recipients; any private key can decrypt
+if err := mcapencrypt.EncryptMulti("input.mcap", "encrypted.mcap", []string{
+    "alice.pub.pem",
+    "bob.pub.pem",
+}); err != nil { ... }
 
 // Decrypt: produces a standard indexed MCAP
 if err := mcapencrypt.Decrypt("encrypted.mcap", "output.mcap", "mykey.priv.pem"); err != nil { ... }
@@ -182,9 +195,11 @@ if err := mcapencrypt.Decrypt("encrypted.mcap", "output.mcap", "mykey.priv.pem")
 
 **Input/output:**
 
-- `Encrypt` takes a chunked MCAP and writes an encrypted MCAP. Non-chunked input is rejected. Input and output paths must differ.
-- `Decrypt` takes an encrypted MCAP and writes a standard indexed MCAP with zstd-compressed chunks. Input and output paths must differ.
-- If `Encrypt` or `Decrypt` fails partway, the output file is automatically removed.
+- `Encrypt` is a convenience wrapper for `EncryptMulti` with a single key.
+- `EncryptMulti` wraps the same symmetric key for each public key in the list. The file can be decrypted with any of the corresponding private keys.
+- Chunks are encrypted in parallel using `runtime.NumCPU()` goroutines. Output order is deterministic.
+- `Decrypt` takes an encrypted MCAP and writes a standard indexed MCAP with zstd-compressed chunks. It tries all wrapped-key attachments and succeeds when one matches.
+- If `Encrypt`, `EncryptMulti`, or `Decrypt` fails partway, the output file is automatically removed.
 
 ---
 
@@ -199,12 +214,15 @@ import { readFileSync, writeFileSync } from "node:fs";
 // Generate a key pair (in-memory PEM strings)
 const { publicKeyPem, privateKeyPem } = await generateKeyPair();
 
-// Encrypt
+// Encrypt for a single recipient
 const plain = new Uint8Array(readFileSync("input.mcap"));
 const encrypted = await encryptMcap(plain, publicKeyPem);
 writeFileSync("encrypted.mcap", encrypted);
 
-// Decrypt to a new MCAP buffer
+// Encrypt for multiple recipients; any private key can decrypt
+const encrypted2 = await encryptMcap(plain, [alicePubPem, bobPubPem]);
+
+// Decrypt to a fully-indexed MCAP buffer (with ChunkIndex and summary section)
 const enc = new Uint8Array(readFileSync("encrypted.mcap"));
 const decrypted = await decryptMcap(enc, privateKeyPem);
 writeFileSync("output.mcap", decrypted);
@@ -220,8 +238,8 @@ for await (const { schema, channel, message } of iterateMessages(enc, privateKey
 | Export | Signature | Description |
 |---|---|---|
 | `generateKeyPair` | `() => Promise<KeyPair>` | Generates RSA-2048 key pair, returns PEM strings. |
-| `encryptMcap` | `(input: Uint8Array, pubKeyPem: string) => Promise<Uint8Array>` | Encrypts a chunked MCAP in memory. |
-| `decryptMcap` | `(input: Uint8Array, privKeyPem: string) => Promise<Uint8Array>` | Decrypts to a flat MCAP buffer. |
+| `encryptMcap` | `(input: Uint8Array, pubKeyPem: string \| string[]) => Promise<Uint8Array>` | Encrypts a chunked MCAP in memory. Pass an array for multi-recipient. |
+| `decryptMcap` | `(input: Uint8Array, privKeyPem: string) => Promise<Uint8Array>` | Decrypts to a fully-indexed MCAP buffer with ChunkIndex and summary section. |
 | `iterateMessages` | `(input: Uint8Array, privKeyPem: string) => AsyncGenerator<{schema, channel, message}>` | Streams decrypted messages without materializing output. |
 
 **Browser compatibility:** Uses the Web Crypto API and `fzstd` (pure-TypeScript zstd). No WASM, no Node-specific APIs. Works in Chromium 89+, Firefox 90+, Safari 15+.
@@ -261,10 +279,12 @@ Both implementations agree on:
 > **TLDR:** Valid MCAP file with one custom record type (opcode `0x81`). Standard tools can open it but get no messages.
 
 ```
-[magic] [Header] [Schema]* [Channel]* [WrappedKeyAttachment] [EncryptedChunk]* [DataEnd] [Footer] [magic]
+[magic] [Header] [Schema]* [Channel]* [WrappedKeyAttachment]+ [EncryptedChunk]* [DataEnd] [Footer] [magic]
 ```
 
 The outer file is a valid MCAP. Standard MCAP readers can open it and inspect schemas and channels. They will not find any messages because the `EncryptedChunk` opcode (`0x81`) is not a standard MCAP record type.
+
+There is one `WrappedKeyAttachment` per recipient. All wrapped copies encode the same symmetric key, wrapped separately for each public key.
 
 ### WrappedKeyAttachment
 
@@ -291,21 +311,20 @@ The `data` payload encodes (in order): `key_id`, `algorithm` (`xchacha20poly1305
 | `nonce` | `bytes (4B len + 24B)` | XChaCha20 nonce |
 | `encrypted_data` | `bytes (4B len + N)` | Ciphertext of compressed records + 16-byte Poly1305 tag |
 
-The placement of `WrappedKeyAttachment` before the first `EncryptedChunk` is a format guarantee. Decoders can begin streaming decryption in a single pass without buffering chunks.
+All `WrappedKeyAttachment` records appear before the first `EncryptedChunk`. Decoders can begin streaming decryption in a single pass without buffering chunks.
 
 ---
 
 ## Known limitations
 
-> **TLDR:** Single recipient, no key rotation, no attachment encryption. TypeScript output is not indexed. No CI yet. These are v1 constraints; the core crypto is solid.
+> **TLDR:** No key rotation, no attachment encryption, TypeScript is in-memory only. These are current constraints. The implementation uses standard AEAD primitives (XChaCha20-Poly1305) and has adversarial tests; it has not been externally audited.
 
-The following are current constraints, not bugs. The cryptographic core is correct and passes adversarial tests. These are engineering trade-offs made for v1.
+The following are current constraints, not bugs. The cryptographic core is correct and passes adversarial tests.
 
 ### Functional limitations
 
 | Limitation | Impact | Workaround |
 |---|---|---|
-| **Single recipient per file** | Each file can only be decrypted by one private key. | Encrypt the same file multiple times with different public keys. |
 | **No key rotation** | To change the key, you must re-encrypt the entire file. | Re-run `encrypt` with the new public key after decrypting with the old one. |
 | **Attachments are not encrypted** | Attachment content passes through in plaintext. | Encrypt sensitive attachments before writing to the MCAP. |
 | **Input must be chunked** | Non-chunked MCAP files are rejected. | Re-encode with chunking enabled (the Foxglove CLI and most MCAP writers produce chunked output by default). |
@@ -314,18 +333,12 @@ The following are current constraints, not bugs. The cryptographic core is corre
 
 | Limitation | Impact | Notes |
 |---|---|---|
-| **`decryptMcap()` outputs a flat MCAP** | The output has no chunk or index records. Tools can read it, but cannot seek by time efficiently. | Use `iterateMessages()` instead for streaming access. The Go CLI produces a fully-indexed output. |
-| **No LZ4 decompression** | Cannot decompress LZ4-compressed chunks directly. | Non-issue in practice: `encryptMcap()` normalizes LZ4 to zstd at encryption time. Only relevant if you hand-craft an encrypted file with LZ4 chunks. |
 | **In-memory only** | The TypeScript API holds the entire file in a `Uint8Array`. | Use the Go CLI for files larger than available RAM. |
+| **No LZ4 decompression** | Cannot decompress LZ4-compressed chunks directly. | Non-issue in practice: `encryptMcap()` normalizes LZ4 to zstd at encryption time. Only relevant if you hand-craft an encrypted file with LZ4 chunks. |
 
 ### Not yet implemented
 
-- Progress reporting in the CLI (no feedback for large files).
-- Multi-recipient encryption (multiple wrapped keys per file).
-- Concurrent chunk processing (chunks are processed serially).
 - Python library.
-- Published npm package (currently install from source).
-- GitHub Actions CI pipeline.
 
 ---
 
