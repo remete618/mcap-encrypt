@@ -7,6 +7,7 @@ import {
   OP_CHANNEL,
   OP_MESSAGE,
   OP_CHUNK,
+  OP_ATTACHMENT,
   OP_DATA_END,
   OP_FOOTER,
 } from "../src/record.js";
@@ -114,6 +115,65 @@ export function collectMessages(mcap: Uint8Array): Message[] {
     }
   }
   return msgs;
+}
+
+// Builds a minimal chunked MCAP with profile="ros2", library="test-lib", and a "config.json" attachment.
+export function buildTestMcapWithAttachment(): Uint8Array {
+  const w = new BinaryWriter();
+  writeMagic(w);
+  writeRecord(w, 0x01, encodeHeader("ros2", "test-lib"));
+
+  writeRecord(w, OP_SCHEMA, encodeSchema({
+    id: 1, name: "sensor", encoding: "json",
+    data: new TextEncoder().encode("{}"),
+  }));
+  writeRecord(w, OP_CHANNEL, encodeChannel({
+    id: 1, schemaId: 1, topic: "/sensor", messageEncoding: "json", metadata: new Map(),
+  }));
+
+  const inner = new BinaryWriter();
+  writeRecord(inner, OP_MESSAGE, encodeMessage({
+    channelId: 1, sequence: 0, logTime: 1_000_000n, publishTime: 1_000_000n,
+    data: new TextEncoder().encode('{"v":1}'),
+  }));
+  const innerBytes = inner.toUint8Array();
+
+  const chunkBody = new BinaryWriter();
+  chunkBody.writeUint64(1_000_000n);
+  chunkBody.writeUint64(1_000_000n);
+  chunkBody.writeUint64(BigInt(innerBytes.length));
+  chunkBody.writeUint32(0);
+  chunkBody.writeString("");
+  chunkBody.writeUint64(BigInt(innerBytes.length));
+  chunkBody.writeBytes(innerBytes);
+  writeRecord(w, OP_CHUNK, chunkBody.toUint8Array());
+
+  const attData = new TextEncoder().encode('{"k":"v"}');
+  const attPayload = new BinaryWriter();
+  attPayload.writeUint64(500_000n);
+  attPayload.writeUint64(0n);
+  attPayload.writeString("config.json");
+  attPayload.writeString("application/json");
+  attPayload.writeUint64(BigInt(attData.length));
+  attPayload.writeBytes(attData);
+  attPayload.writeUint32(0);
+  writeRecord(w, OP_ATTACHMENT, attPayload.toUint8Array());
+
+  writeRecord(w, OP_DATA_END, encodeDataEnd());
+  writeRecord(w, OP_FOOTER, encodeFooter());
+  writeMagic(w);
+  return w.toUint8Array();
+}
+
+// Builds a MCAP with header and footer but no messages or chunks.
+export function buildEmptyMcap(): Uint8Array {
+  const w = new BinaryWriter();
+  writeMagic(w);
+  writeRecord(w, 0x01, encodeHeader("empty", ""));
+  writeRecord(w, OP_DATA_END, encodeDataEnd());
+  writeRecord(w, OP_FOOTER, encodeFooter());
+  writeMagic(w);
+  return w.toUint8Array();
 }
 
 // Builds a minimal non-chunked MCAP (raw Message records, no Chunk records).
