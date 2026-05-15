@@ -116,6 +116,28 @@ export function collectMessages(mcap: Uint8Array): Message[] {
   return msgs;
 }
 
+// Builds a minimal non-chunked MCAP (raw Message records, no Chunk records).
+export function buildNonChunkedMcap(): Uint8Array {
+  const w = new BinaryWriter();
+  writeMagic(w);
+  writeRecord(w, 0x01, encodeHeader("test", ""));
+  writeRecord(w, OP_SCHEMA, encodeSchema({
+    id: 1, name: "sensor", encoding: "json",
+    data: new TextEncoder().encode('{"type":"object"}'),
+  }));
+  writeRecord(w, OP_CHANNEL, encodeChannel({
+    id: 1, schemaId: 1, topic: "/sensor", messageEncoding: "json", metadata: new Map(),
+  }));
+  writeRecord(w, OP_MESSAGE, encodeMessage({
+    channelId: 1, sequence: 0, logTime: 1_000_000_000n, publishTime: 1_000_000_000n,
+    data: new TextEncoder().encode('{"x":1}'),
+  }));
+  writeRecord(w, OP_DATA_END, encodeDataEnd());
+  writeRecord(w, OP_FOOTER, encodeFooter());
+  writeMagic(w);
+  return w.toUint8Array();
+}
+
 export function assertMessagesMatch(got: Message[], expected: Message[]): void {
   if (got.length !== expected.length) {
     throw new Error(`message count mismatch: got ${got.length}, expected ${expected.length}`);

@@ -6,6 +6,7 @@ import {
   OP_SCHEMA,
   OP_CHANNEL,
   OP_CHUNK,
+  OP_MESSAGE,
   OP_ATTACHMENT,
   OP_DATA_END,
   OP_FOOTER,
@@ -77,22 +78,28 @@ function encodeAttachment(
   return w.toUint8Array();
 }
 
-export async function encryptMcap(input: Uint8Array, publicKeyPem: string): Promise<Uint8Array> {
+export async function encryptMcap(
+  input: Uint8Array,
+  publicKeyPem: string | string[],
+): Promise<Uint8Array> {
+  const pubKeys = Array.isArray(publicKeyPem) ? publicKeyPem : [publicKeyPem];
+  if (pubKeys.length === 0) throw new Error("at least one public key is required");
+
   const symKey = randomBytes(KEY_SIZE);
-  const wrappedKey = await wrapSymmetricKey(symKey, publicKeyPem);
-  const wkdBytes = encodeWrappedKeyData({
-    keyId: "key-1",
-    algorithm: "xchacha20poly1305",
-    kekAlg: "rsa-oaep-sha256",
-    wrappedKey,
-  });
-  const keyAttachment = encodeAttachment(
-    BigInt(Date.now()) * 1_000_000n,
-    0n,
-    ATTACHMENT_NAME,
-    ATTACHMENT_MEDIA_TYPE,
-    wkdBytes,
-  );
+  const now = BigInt(Date.now()) * 1_000_000n;
+
+  // Wrap the symmetric key for each recipient; store as separate attachments.
+  const keyAttachments: Uint8Array[] = [];
+  for (let i = 0; i < pubKeys.length; i++) {
+    const wrappedKey = await wrapSymmetricKey(symKey, pubKeys[i]!);
+    const wkdBytes = encodeWrappedKeyData({
+      keyId: `key-${i + 1}`,
+      algorithm: "xchacha20poly1305",
+      kekAlg: "rsa-oaep-sha256",
+      wrappedKey,
+    });
+    keyAttachments.push(encodeAttachment(now, 0n, ATTACHMENT_NAME, ATTACHMENT_MEDIA_TYPE, wkdBytes));
+  }
 
   const reader = new BinaryReader(input);
   const writer = new BinaryWriter();
@@ -112,7 +119,7 @@ export async function encryptMcap(input: Uint8Array, publicKeyPem: string): Prom
     flushed = true;
     for (const s of pendingSchemas) writeRecord(writer, OP_SCHEMA, s);
     for (const c of pendingChannels) writeRecord(writer, OP_CHANNEL, c);
-    writeRecord(writer, OP_ATTACHMENT, keyAttachment);
+    for (const att of keyAttachments) writeRecord(writer, OP_ATTACHMENT, att);
   };
 
   outer: while (reader.remaining > 0) {
@@ -161,6 +168,11 @@ export async function encryptMcap(input: Uint8Array, publicKeyPem: string): Prom
       case OP_FOOTER:
         writeRecord(writer, OP_FOOTER, new Uint8Array(20));
         break outer;
+
+      case OP_MESSAGE:
+        throw new Error(
+          "input MCAP contains raw Message records outside of chunks; only chunked MCAPs are supported",
+        );
 
       default:
         // Drop index records and anything else that references original byte offsets.

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { encryptMcap, decryptMcap, iterateMessages, generateKeyPair, type KeyPair } from "../src/index.js";
-import { buildTestMcap, collectMessages } from "./helpers.js";
+import { buildTestMcap, buildNonChunkedMcap, collectMessages } from "./helpers.js";
 
 let keys: KeyPair;
 let testMcap: Uint8Array;
@@ -51,6 +51,45 @@ describe("iterateMessages", () => {
     expect(results).toHaveLength(100);
     expect(results.filter((r) => r.topic === "/sensor")).toHaveLength(50);
     expect(results.filter((r) => r.topic === "/cmd")).toHaveLength(50);
+  });
+});
+
+describe("multi-recipient", () => {
+  it("any recipient key can decrypt the same file", async () => {
+    const keysA = await generateKeyPair();
+    const keysB = await generateKeyPair();
+
+    const enc = await encryptMcap(testMcap, [keysA.publicKeyPem, keysB.publicKeyPem]);
+
+    const decA = await decryptMcap(enc, keysA.privateKeyPem);
+    const decB = await decryptMcap(enc, keysB.privateKeyPem);
+
+    const orig = collectMessages(testMcap);
+    const gotA = collectMessages(decA);
+    const gotB = collectMessages(decB);
+
+    expect(gotA).toHaveLength(orig.length);
+    expect(gotB).toHaveLength(orig.length);
+    for (let i = 0; i < orig.length; i++) {
+      expect(gotA[i]!.data).toEqual(orig[i]!.data);
+      expect(gotB[i]!.data).toEqual(orig[i]!.data);
+    }
+  });
+
+  it("rejects a key that is not a recipient", async () => {
+    const keysA = await generateKeyPair();
+    const keysB = await generateKeyPair();
+    const keysC = await generateKeyPair();
+
+    const enc = await encryptMcap(testMcap, [keysA.publicKeyPem, keysB.publicKeyPem]);
+    await expect(decryptMcap(enc, keysC.privateKeyPem)).rejects.toThrow(/2 recipient/);
+  });
+});
+
+describe("input validation", () => {
+  it("rejects non-chunked MCAP input", async () => {
+    const nonChunked = buildNonChunkedMcap();
+    await expect(encryptMcap(nonChunked, keys.publicKeyPem)).rejects.toThrow(/chunked/);
   });
 });
 
