@@ -232,7 +232,7 @@ scan:
 		case opcodeFooter:
 			break scan
 
-		// Ignore header, data-end, and any index records.
+			// Ignore header, data-end, and any index records.
 		}
 	}
 

@@ -5,25 +5,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
 )
 
-const usage = `mcap-encrypt: encrypt and decrypt MCAP files using XChaCha20Poly1305 + RSA-2048
+const usage = `mcap-encrypt: encrypt and decrypt MCAP files with XChaCha20-Poly1305 + RSA-2048
 
 Usage:
   mcap-encrypt keygen  --out <basename>
-  mcap-encrypt encrypt --key <pub.pem>  <input.mcap> <output.mcap>
-  mcap-encrypt decrypt --key <priv.pem> <input.mcap> <output.mcap>
+  mcap-encrypt encrypt --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+  mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap> <output.mcap>
 
 Commands:
   keygen   Generate an RSA-2048 key pair.
            Writes <basename>.pub.pem and <basename>.priv.pem.
 
-  encrypt  Encrypt an MCAP file. Each chunk is encrypted with XChaCha20Poly1305.
-           The symmetric key is wrapped with the RSA public key and stored as
-           an attachment named "mcap_encryption_key".
-           Schemas and channels remain plaintext (structure visible, data hidden).
+  encrypt  Encrypt an MCAP file. Each chunk is encrypted with XChaCha20-Poly1305.
+           Repeat --key to encrypt for multiple recipients; any private key decrypts.
+           Chunks are processed in parallel using all available CPU cores.
 
   decrypt  Decrypt an encrypted MCAP file using the RSA private key.
            Outputs a standard, fully-indexed MCAP file.
@@ -48,6 +50,12 @@ func main() {
 	}
 }
 
+// stringList is a repeatable flag value (--key a --key b → ["a", "b"]).
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ", ") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
+
 func checkMCAPMagic(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -64,6 +72,50 @@ func checkMCAPMagic(path string) error {
 	return nil
 }
 
+// startSpinner prints an animated progress line to stderr. Close the returned
+// channel to stop the spinner and clear the line.
+func startSpinner(label string) chan struct{} {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		frames := []byte{'-', '\\', '|', '/'}
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		start := time.Now()
+		i := 0
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Fprintf(os.Stderr, "\r  %c  %s  %.1fs",
+					frames[i%len(frames)], label, time.Since(start).Seconds())
+				i++
+			case <-done:
+				fmt.Fprint(os.Stderr, "\r\033[K") // clear the progress line
+				return
+			}
+		}
+	}()
+	// Return a channel that, when closed, stops the spinner and waits for cleanup.
+	stop := make(chan struct{})
+	go func() {
+		<-stop
+		close(done)
+		wg.Wait()
+	}()
+	return stop
+}
+
+func formatThroughput(path string, elapsed time.Duration) string {
+	info, err := os.Stat(path)
+	if err != nil || elapsed.Seconds() < 0.01 {
+		return ""
+	}
+	mbps := float64(info.Size()) / elapsed.Seconds() / 1024 / 1024
+	return fmt.Sprintf("  (%.1f MB/s)", mbps)
+}
+
 func runKeygen(args []string) {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	out := fs.String("out", "mcap-key", "output basename for key files")
@@ -77,11 +129,12 @@ func runKeygen(args []string) {
 
 func runEncrypt(args []string) {
 	fs := flag.NewFlagSet("encrypt", flag.ExitOnError)
-	key := fs.String("key", "", "path to RSA public key (.pub.pem)")
+	var keys stringList
+	fs.Var(&keys, "key", "path to RSA public key (.pub.pem); repeat for multiple recipients")
 	force := fs.Bool("force", false, "overwrite output file if it exists")
 	_ = fs.Parse(args)
 
-	if *key == "" {
+	if len(keys) == 0 {
 		fatal(fmt.Errorf("--key is required"))
 	}
 	if fs.NArg() != 2 {
@@ -97,11 +150,24 @@ func runEncrypt(args []string) {
 			fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
 		}
 	}
-	fmt.Printf("encrypting %s → %s\n", input, output)
-	if err := mcapencrypt.Encrypt(input, output, *key); err != nil {
+
+	recipientNote := ""
+	if len(keys) > 1 {
+		recipientNote = fmt.Sprintf(" (%d recipients)", len(keys))
+	}
+	fmt.Printf("encrypting%s: %s\n", recipientNote, input)
+
+	stop := startSpinner("encrypting")
+	start := time.Now()
+	err := mcapencrypt.EncryptMulti(input, output, []string(keys))
+	close(stop)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		os.Remove(output)
 		fatal(err)
 	}
-	fmt.Println("done")
+	fmt.Printf("done  %.2fs%s\n", elapsed.Seconds(), formatThroughput(output, elapsed))
 }
 
 func runDecrypt(args []string) {
@@ -123,11 +189,19 @@ func runDecrypt(args []string) {
 			fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
 		}
 	}
-	fmt.Printf("decrypting %s → %s\n", input, output)
-	if err := mcapencrypt.Decrypt(input, output, *key); err != nil {
+	fmt.Printf("decrypting: %s\n", input)
+
+	stop := startSpinner("decrypting")
+	start := time.Now()
+	err := mcapencrypt.Decrypt(input, output, *key)
+	close(stop)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		os.Remove(output)
 		fatal(err)
 	}
-	fmt.Println("done")
+	fmt.Printf("done  %.2fs%s\n", elapsed.Seconds(), formatThroughput(output, elapsed))
 }
 
 func fatal(err error) {
