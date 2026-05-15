@@ -3,9 +3,11 @@ package mcapencrypt
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -13,28 +15,27 @@ import (
 	"github.com/foxglove/mcap/go/mcap"
 )
 
-// tokenOpcode maps Lexer token types to their MCAP opcodes for raw passthrough.
-var tokenOpcode = map[mcap.TokenType]byte{
-	mcap.TokenHeader:        0x01,
-	mcap.TokenFooter:        0x02,
-	mcap.TokenSchema:        0x03,
-	mcap.TokenChannel:       0x04,
-	mcap.TokenMessage:       0x05,
-	mcap.TokenChunk:         0x06,
-	mcap.TokenMessageIndex:  0x07,
-	mcap.TokenChunkIndex:    0x08,
-	mcap.TokenStatistics:    0x0B,
-	mcap.TokenMetadata:      0x0C,
-	mcap.TokenMetadataIndex: 0x0D,
-	mcap.TokenSummaryOffset: 0x0E,
-	mcap.TokenDataEnd:       0x0F,
-}
-
 // Encrypt reads a standard MCAP file and writes an encrypted MCAP file.
 // Each chunk is encrypted with XChaCha20Poly1305. The symmetric key is
 // wrapped with the RSA-2048 public key and stored as an Attachment named
 // "mcap_encryption_key". Schemas and channels remain plaintext.
-func Encrypt(inputPath, outputPath, pubKeyPath string) error {
+//
+// Constraints:
+//   - Input must be a chunked MCAP. Non-chunked files are rejected.
+//   - inputPath and outputPath must differ.
+func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
+	absIn, err := filepath.Abs(inputPath)
+	if err != nil {
+		return fmt.Errorf("resolve input path: %w", err)
+	}
+	absOut, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("resolve output path: %w", err)
+	}
+	if absIn == absOut {
+		return fmt.Errorf("inputPath and outputPath must differ")
+	}
+
 	pub, err := LoadPublicKey(pubKeyPath)
 	if err != nil {
 		return fmt.Errorf("load public key: %w", err)
@@ -68,7 +69,12 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 	if err != nil {
 		return fmt.Errorf("create output: %w", err)
 	}
-	defer outFile.Close()
+	defer func() {
+		outFile.Close()
+		if retErr != nil {
+			os.Remove(outputPath)
+		}
+	}()
 
 	if err := WriteMagic(outFile); err != nil {
 		return err
@@ -79,6 +85,8 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 	lexer, err := mcap.NewLexer(inFile, &mcap.LexerOptions{
 		EmitChunks: true,
 		AttachmentCallback: func(ar *mcap.AttachmentReader) error {
+			// Pass existing attachments through plaintext.
+			// NOTE: attachment content is NOT encrypted in v1.
 			data, readErr := io.ReadAll(ar.Data())
 			if readErr != nil {
 				return readErr
@@ -94,7 +102,7 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 	for {
 		tok, data, lexErr := lexer.Next(tokenBuf)
 		if lexErr != nil {
-			if lexErr == io.EOF {
+			if errors.Is(lexErr, io.EOF) {
 				break
 			}
 			return fmt.Errorf("lexer: %w", lexErr)
@@ -102,6 +110,12 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 		tokenBuf = data
 
 		switch tok {
+
+		case mcap.TokenMessage:
+			// Non-chunked messages cannot be encrypted safely — reject the file.
+			return fmt.Errorf("input MCAP is not chunked: raw Message records found outside chunks; " +
+				"re-encode with chunking enabled before encrypting")
+
 		case mcap.TokenChunk:
 			chunk, parseErr := mcap.ParseChunk(data)
 			if parseErr != nil {
@@ -132,27 +146,50 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 			}
 
 		case mcap.TokenFooter:
-			// Write our own footer: SummaryStart=0 means no summary section.
+			// Write our own footer: SummaryStart=0 signals no summary section.
 			if writeErr := WriteRecord(outFile, opcodeFooter, emptyFooter); writeErr != nil {
 				return writeErr
 			}
 
 		case mcap.TokenMessageIndex, mcap.TokenChunkIndex,
-			mcap.TokenStatistics, mcap.TokenSummaryOffset:
-			// Drop: byte offsets are invalid after chunk replacement.
+			mcap.TokenStatistics, mcap.TokenSummaryOffset,
+			mcap.TokenAttachmentIndex, mcap.TokenMetadataIndex:
+			// Drop: all index/offset records reference byte positions in the
+			// original file that are invalid after chunk replacement.
 
-		default:
-			op, ok := tokenOpcode[tok]
+		case mcap.TokenHeader, mcap.TokenSchema, mcap.TokenChannel, mcap.TokenMetadata:
+			op, ok := passthroughOpcode[tok]
 			if !ok {
 				return fmt.Errorf("unhandled token type %v", tok)
 			}
 			if writeErr := WriteRecord(outFile, op, data); writeErr != nil {
 				return writeErr
 			}
+
+		default:
+			return fmt.Errorf("unhandled token type %v", tok)
 		}
 	}
 
 	return WriteMagic(outFile)
+}
+
+// passthroughOpcode maps token types that are written verbatim to their opcodes.
+// Deliberately excludes index records, chunk-related records, and Message.
+var passthroughOpcode = map[mcap.TokenType]byte{
+	mcap.TokenHeader:   0x01,
+	mcap.TokenSchema:   0x03,
+	mcap.TokenChannel:  0x04,
+	mcap.TokenMetadata: 0x0C,
+}
+
+// chunkAAD encodes chunk time bounds as AEAD additional data (16 bytes).
+// Binding this prevents ciphertext chunks from being swapped between files.
+func chunkAAD(startTime, endTime uint64) []byte {
+	aad := make([]byte, 16)
+	binary.LittleEndian.PutUint64(aad[0:], startTime)
+	binary.LittleEndian.PutUint64(aad[8:], endTime)
+	return aad
 }
 
 func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string) (*EncryptedChunk, error) {
@@ -164,7 +201,8 @@ func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string) (*EncryptedChu
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	ciphertext := aead.Seal(nil, nonce, chunk.Records, nil)
+	aad := chunkAAD(chunk.MessageStartTime, chunk.MessageEndTime)
+	ciphertext := aead.Seal(nil, nonce, chunk.Records, aad)
 
 	return &EncryptedChunk{
 		MessageStartTime: chunk.MessageStartTime,
@@ -179,7 +217,7 @@ func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string) (*EncryptedChu
 }
 
 // writeAttachmentRecord serializes a full MCAP Attachment record (opcode 0x09).
-// CRC is written as 0 (not validated).
+// CRC field is written as 0 (validation skipped).
 func writeAttachmentRecord(w io.Writer, logTime, createTime uint64, name, mediaType string, data []byte) error {
 	nb := []byte(name)
 	mb := []byte(mediaType)

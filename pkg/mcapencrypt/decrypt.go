@@ -4,17 +4,32 @@ import (
 	"bytes"
 	"crypto/rsa"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/crypto/chacha20poly1305"
 
 	"github.com/foxglove/mcap/go/mcap"
 )
 
-// Decrypt reads an encrypted MCAP file and writes a standard MCAP file.
-func Decrypt(inputPath, outputPath, privKeyPath string) error {
+// Decrypt reads an encrypted MCAP file and writes a standard, indexed MCAP file.
+// inputPath and outputPath must differ.
+func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
+	absIn, err := filepath.Abs(inputPath)
+	if err != nil {
+		return fmt.Errorf("resolve input path: %w", err)
+	}
+	absOut, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("resolve output path: %w", err)
+	}
+	if absIn == absOut {
+		return fmt.Errorf("inputPath and outputPath must differ")
+	}
+
 	priv, err := LoadPrivateKey(privKeyPath)
 	if err != nil {
 		return fmt.Errorf("load private key: %w", err)
@@ -35,7 +50,12 @@ func Decrypt(inputPath, outputPath, privKeyPath string) error {
 	if err != nil {
 		return fmt.Errorf("create output: %w", err)
 	}
-	defer outFile.Close()
+	defer func() {
+		outFile.Close()
+		if retErr != nil {
+			os.Remove(outputPath)
+		}
+	}()
 
 	writer, err := mcap.NewWriter(outFile, &mcap.WriterOptions{
 		Chunked:     true,
@@ -67,9 +87,10 @@ func Decrypt(inputPath, outputPath, privKeyPath string) error {
 	}
 
 	for _, ec := range encChunks {
-		plaintext, decErr := aead.Open(nil, ec.Nonce, ec.EncryptedData, nil)
+		aad := chunkAAD(ec.MessageStartTime, ec.MessageEndTime)
+		plaintext, decErr := aead.Open(nil, ec.Nonce, ec.EncryptedData, aad)
 		if decErr != nil {
-			return fmt.Errorf("decrypt chunk: %w", decErr)
+			return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, decErr)
 		}
 
 		msgs, parseErr := parseChunkRecords(plaintext, ec.Compression)
@@ -87,8 +108,8 @@ func Decrypt(inputPath, outputPath, privKeyPath string) error {
 }
 
 // scanEncryptedFile does a single linear pass over an encrypted MCAP file.
-// It returns the unwrapped symmetric key, plaintext schemas/channels, and all
-// EncryptedChunk records. The file must not require random access.
+// Returns the unwrapped symmetric key, plaintext schemas/channels, and all
+// EncryptedChunk records.
 func scanEncryptedFile(r io.Reader, priv *rsa.PrivateKey) (
 	symKey []byte,
 	schemas []*mcap.Schema,
@@ -106,7 +127,7 @@ scan:
 		var data []byte
 		opcode, data, err = ReadRecord(r)
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				err = nil
 				break
 			}
@@ -160,11 +181,13 @@ scan:
 
 		case opcodeFooter:
 			break scan
+
+		// Ignore everything else (header, data-end, index records).
 		}
 	}
 
 	if symKey == nil {
-		err = fmt.Errorf("no wrapped key attachment found in file")
+		err = fmt.Errorf("no wrapped key attachment found — is this an encrypted MCAP file?")
 	}
 	return
 }
@@ -174,18 +197,16 @@ func parseAttachmentRecord(data []byte) (name, mediaType string, attData []byte,
 	if len(data) < 20 {
 		return "", "", nil, fmt.Errorf("attachment record too short")
 	}
-	o := 0
-	o += 8 // log_time
-	o += 8 // create_time
+	o := 16 // skip log_time (8) + create_time (8)
 
 	readStr := func() (string, error) {
 		if o+4 > len(data) {
-			return "", fmt.Errorf("truncated")
+			return "", fmt.Errorf("truncated reading string length")
 		}
 		n := int(binary.LittleEndian.Uint32(data[o:]))
 		o += 4
 		if o+n > len(data) {
-			return "", fmt.Errorf("truncated")
+			return "", fmt.Errorf("truncated reading string data")
 		}
 		s := string(data[o : o+n])
 		o += n
@@ -200,13 +221,11 @@ func parseAttachmentRecord(data []byte) (name, mediaType string, attData []byte,
 	if err != nil {
 		return
 	}
-
 	if o+8 > len(data) {
 		return "", "", nil, fmt.Errorf("truncated before data_size")
 	}
 	dataSize := int(binary.LittleEndian.Uint64(data[o:]))
 	o += 8
-
 	if o+dataSize > len(data) {
 		return "", "", nil, fmt.Errorf("truncated in data field")
 	}
@@ -214,16 +233,13 @@ func parseAttachmentRecord(data []byte) (name, mediaType string, attData []byte,
 	return
 }
 
-// parseChunkRecords decompresses chunk data and parses the Message records within.
+// parseChunkRecords decompresses chunk data and extracts Message records.
 func parseChunkRecords(compressed []byte, compression string) ([]*mcap.Message, error) {
 	decompressed, err := decompressChunkData(compressed, compression)
 	if err != nil {
 		return nil, fmt.Errorf("decompress: %w", err)
 	}
 
-	// The decompressed bytes are a sequence of raw MCAP records.
-	// We only extract Message records (opcode 0x05); Schema/Channel inside chunks
-	// are already handled from the plaintext section of the file.
 	var msgs []*mcap.Message
 	r := bytes.NewReader(decompressed)
 	for r.Len() > 0 {
@@ -256,12 +272,10 @@ func decompressChunkData(data []byte, compression string) ([]byte, error) {
 	case "", "none":
 		return data, nil
 	case "zstd":
-		// Use the zstd reader from the MCAP library's transitive dependency.
-		// We import it directly since it's already in go.sum.
 		return decompressZstd(data)
 	case "lz4":
 		return decompressLz4(data)
 	default:
-		return nil, fmt.Errorf("unsupported compression: %s", compression)
+		return nil, fmt.Errorf("unsupported compression %q", compression)
 	}
 }
