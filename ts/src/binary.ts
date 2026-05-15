@@ -9,29 +9,42 @@ export class BinaryReader {
     this.offset = 0;
   }
 
+  private require(n: number): void {
+    if (this.offset + n > this.data.length) {
+      throw new Error(
+        `unexpected end of data: need ${n} bytes at offset ${this.offset}, have ${this.data.length - this.offset}`,
+      );
+    }
+  }
+
   readUint8(): number {
+    this.require(1);
     return this.view.getUint8(this.offset++);
   }
 
   readUint16(): number {
+    this.require(2);
     const v = this.view.getUint16(this.offset, true);
     this.offset += 2;
     return v;
   }
 
   readUint32(): number {
+    this.require(4);
     const v = this.view.getUint32(this.offset, true);
     this.offset += 4;
     return v;
   }
 
   readUint64(): bigint {
+    this.require(8);
     const v = this.view.getBigUint64(this.offset, true);
     this.offset += 8;
     return v;
   }
 
   readBytes(n: number): Uint8Array {
+    this.require(n);
     const result = this.data.subarray(this.offset, this.offset + n);
     this.offset += n;
     return result;
