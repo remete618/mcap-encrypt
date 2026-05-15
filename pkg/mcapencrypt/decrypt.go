@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 )
 
 // Decrypt reads an encrypted MCAP file and writes a standard, indexed MCAP file.
+// Decryption is single-pass: the wrapped key attachment appears before the first
+// encrypted chunk so each chunk is decrypted immediately as it is read.
 // inputPath and outputPath must differ.
 func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
 	absIn, err := filepath.Abs(inputPath)
@@ -41,155 +44,160 @@ func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
 	}
 	defer inFile.Close()
 
-	symKey, schemas, channels, encChunks, scanErr := scanEncryptedFile(inFile, priv)
-	if scanErr != nil {
-		return fmt.Errorf("scan: %w", scanErr)
-	}
-
 	outFile, err := os.Create(outputPath)
 	if err != nil {
 		return fmt.Errorf("create output: %w", err)
 	}
 	defer func() {
-		outFile.Close()
+		if err := outFile.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("close output: %w", err)
+		}
 		if retErr != nil {
 			os.Remove(outputPath)
 		}
 	}()
 
-	writer, err := mcap.NewWriter(outFile, &mcap.WriterOptions{
-		Chunked:     true,
-		ChunkSize:   4 * 1024 * 1024,
-		Compression: mcap.CompressionZSTD,
-		IncludeCRC:  true,
-	})
-	if err != nil {
-		return fmt.Errorf("create writer: %w", err)
-	}
-
-	if err := writer.WriteHeader(&mcap.Header{Profile: ""}); err != nil {
-		return err
-	}
-	for _, s := range schemas {
-		if err := writer.WriteSchema(s); err != nil {
-			return err
-		}
-	}
-	for _, c := range channels {
-		if err := writer.WriteChannel(c); err != nil {
-			return err
-		}
-	}
-
-	aead, err := chacha20poly1305.NewX(symKey)
-	if err != nil {
-		return fmt.Errorf("create cipher: %w", err)
-	}
-
-	for _, ec := range encChunks {
-		aad := chunkAAD(ec.MessageStartTime, ec.MessageEndTime)
-		plaintext, decErr := aead.Open(nil, ec.Nonce, ec.EncryptedData, aad)
-		if decErr != nil {
-			return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, decErr)
-		}
-
-		msgs, parseErr := parseChunkRecords(plaintext, ec.Compression)
-		if parseErr != nil {
-			return fmt.Errorf("parse decrypted chunk: %w", parseErr)
-		}
-		for _, msg := range msgs {
-			if writeErr := writer.WriteMessage(msg); writeErr != nil {
-				return fmt.Errorf("write message: %w", writeErr)
-			}
-		}
-	}
-
-	return writer.Close()
+	return streamDecrypt(inFile, outFile, priv)
 }
 
-// scanEncryptedFile does a single linear pass over an encrypted MCAP file.
-// Returns the unwrapped symmetric key, plaintext schemas/channels, and all
-// EncryptedChunk records.
-func scanEncryptedFile(r io.Reader, priv *rsa.PrivateKey) (
-	symKey []byte,
-	schemas []*mcap.Schema,
-	channels []*mcap.Channel,
-	encChunks []*EncryptedChunk,
-	err error,
-) {
-	if err = ReadMagic(r); err != nil {
-		return
+// streamDecrypt performs a single-pass decrypt: schemas and channels are
+// buffered (they are small and appear before the first chunk), the wrapped key
+// is parsed when its attachment is encountered, and each EncryptedChunk is
+// decrypted and written immediately without buffering all chunks.
+func streamDecrypt(r io.Reader, w io.Writer, priv *rsa.PrivateKey) error {
+	if err := ReadMagic(r); err != nil {
+		return fmt.Errorf("read magic: %w", err)
+	}
+
+	var (
+		symKey   []byte
+		schemas  []*mcap.Schema
+		channels []*mcap.Channel
+		writer   *mcap.Writer
+	)
+
+	// ensureWriter initialises the McapWriter on first EncryptedChunk, writing
+	// all buffered schemas and channels before any messages.
+	ensureWriter := func() error {
+		if writer != nil {
+			return nil
+		}
+		var err error
+		writer, err = mcap.NewWriter(w, &mcap.WriterOptions{
+			Chunked:     true,
+			ChunkSize:   4 * 1024 * 1024,
+			Compression: mcap.CompressionZSTD,
+			IncludeCRC:  true,
+		})
+		if err != nil {
+			return fmt.Errorf("create writer: %w", err)
+		}
+		if err := writer.WriteHeader(&mcap.Header{Profile: ""}); err != nil {
+			return err
+		}
+		for _, s := range schemas {
+			if err := writer.WriteSchema(s); err != nil {
+				return err
+			}
+		}
+		for _, c := range channels {
+			if err := writer.WriteChannel(c); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 scan:
 	for {
 		var opcode byte
 		var data []byte
+		var err error
 		opcode, data, err = ReadRecord(r)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				err = nil
 				break
 			}
-			return
+			return err
 		}
 
 		switch opcode {
 		case opcodeSchema:
 			s, parseErr := mcap.ParseSchema(data)
 			if parseErr != nil {
-				err = fmt.Errorf("parse schema: %w", parseErr)
-				return
+				return fmt.Errorf("parse schema: %w", parseErr)
 			}
 			schemas = append(schemas, s)
 
 		case opcodeChannel:
 			c, parseErr := mcap.ParseChannel(data)
 			if parseErr != nil {
-				err = fmt.Errorf("parse channel: %w", parseErr)
-				return
+				return fmt.Errorf("parse channel: %w", parseErr)
 			}
 			channels = append(channels, c)
 
 		case opcodeAttach:
 			name, mediaType, attData, parseErr := parseAttachmentRecord(data)
 			if parseErr != nil {
-				err = fmt.Errorf("parse attachment: %w", parseErr)
-				return
+				return fmt.Errorf("parse attachment: %w", parseErr)
 			}
 			if name != AttachmentName || mediaType != AttachmentMediaType {
 				continue
 			}
 			wkd, decErr := DecodeWrappedKeyData(attData)
 			if decErr != nil {
-				err = fmt.Errorf("decode wrapped key: %w", decErr)
-				return
+				return fmt.Errorf("decode wrapped key: %w", decErr)
 			}
 			symKey, err = UnwrapSymmetricKey(wkd.WrappedKey, priv)
 			if err != nil {
-				err = fmt.Errorf("unwrap symmetric key: %w", err)
-				return
+				return fmt.Errorf("unwrap symmetric key: %w", err)
 			}
 
 		case OpcodeEncryptedChunk:
+			if symKey == nil {
+				return fmt.Errorf("encountered encrypted chunk before wrapped key attachment")
+			}
+			if err := ensureWriter(); err != nil {
+				return err
+			}
 			ec, decErr := DecodeEncryptedChunk(data)
 			if decErr != nil {
-				err = fmt.Errorf("decode encrypted chunk: %w", decErr)
-				return
+				return fmt.Errorf("decode encrypted chunk: %w", decErr)
 			}
-			encChunks = append(encChunks, ec)
+			aead, cipherErr := chacha20poly1305.NewX(symKey)
+			if cipherErr != nil {
+				return fmt.Errorf("create cipher: %w", cipherErr)
+			}
+			aad := chunkAAD(ec.MessageStartTime, ec.MessageEndTime)
+			plaintext, openErr := aead.Open(nil, ec.Nonce, ec.EncryptedData, aad)
+			if openErr != nil {
+				return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, openErr)
+			}
+			msgs, parseErr := parseChunkRecords(plaintext, ec.Compression, ec.UncompressedCRC)
+			if parseErr != nil {
+				return fmt.Errorf("parse decrypted chunk: %w", parseErr)
+			}
+			for _, msg := range msgs {
+				if writeErr := writer.WriteMessage(msg); writeErr != nil {
+					return fmt.Errorf("write message: %w", writeErr)
+				}
+			}
 
 		case opcodeFooter:
 			break scan
 
-		// Ignore everything else (header, data-end, index records).
+		// Ignore header, data-end, and any index records.
 		}
 	}
 
 	if symKey == nil {
-		err = fmt.Errorf("no wrapped key attachment found — is this an encrypted MCAP file?")
+		return fmt.Errorf("no wrapped key attachment found, is this an encrypted MCAP file?")
 	}
-	return
+	if err := ensureWriter(); err != nil {
+		return err
+	}
+	return writer.Close()
 }
 
 // parseAttachmentRecord extracts name, mediaType, and data from raw Attachment record bytes.
@@ -234,10 +242,16 @@ func parseAttachmentRecord(data []byte) (name, mediaType string, attData []byte,
 }
 
 // parseChunkRecords decompresses chunk data and extracts Message records.
-func parseChunkRecords(compressed []byte, compression string) ([]*mcap.Message, error) {
+func parseChunkRecords(compressed []byte, compression string, expectedCRC uint32) ([]*mcap.Message, error) {
 	decompressed, err := decompressChunkData(compressed, compression)
 	if err != nil {
 		return nil, fmt.Errorf("decompress: %w", err)
+	}
+
+	if expectedCRC != 0 {
+		if got := crc32.ChecksumIEEE(decompressed); got != expectedCRC {
+			return nil, fmt.Errorf("CRC mismatch: got %#08x, want %#08x", got, expectedCRC)
+		}
 	}
 
 	var msgs []*mcap.Message

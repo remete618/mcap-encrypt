@@ -3,12 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
 )
 
-const usage = `mcap-encrypt — encrypt and decrypt MCAP files using XChaCha20Poly1305 + RSA-2048
+const usage = `mcap-encrypt: encrypt and decrypt MCAP files using XChaCha20Poly1305 + RSA-2048
 
 Usage:
   mcap-encrypt keygen  --out <basename>
@@ -47,6 +48,22 @@ func main() {
 	}
 }
 
+func checkMCAPMagic(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open: %w", err)
+	}
+	defer f.Close()
+	buf := make([]byte, 8)
+	if _, err := io.ReadFull(f, buf); err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	if string(buf) != "\x89MCAP0\r\n" {
+		return fmt.Errorf("not an MCAP file (invalid magic bytes)")
+	}
+	return nil
+}
+
 func runKeygen(args []string) {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	out := fs.String("out", "mcap-key", "output basename for key files")
@@ -61,6 +78,7 @@ func runKeygen(args []string) {
 func runEncrypt(args []string) {
 	fs := flag.NewFlagSet("encrypt", flag.ExitOnError)
 	key := fs.String("key", "", "path to RSA public key (.pub.pem)")
+	force := fs.Bool("force", false, "overwrite output file if it exists")
 	_ = fs.Parse(args)
 
 	if *key == "" {
@@ -71,6 +89,14 @@ func runEncrypt(args []string) {
 	}
 	input, output := fs.Arg(0), fs.Arg(1)
 
+	if err := checkMCAPMagic(input); err != nil {
+		fatal(fmt.Errorf("input is not a valid MCAP file: %w", err))
+	}
+	if !*force {
+		if _, statErr := os.Stat(output); statErr == nil {
+			fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
+		}
+	}
 	fmt.Printf("encrypting %s → %s\n", input, output)
 	if err := mcapencrypt.Encrypt(input, output, *key); err != nil {
 		fatal(err)
@@ -81,6 +107,7 @@ func runEncrypt(args []string) {
 func runDecrypt(args []string) {
 	fs := flag.NewFlagSet("decrypt", flag.ExitOnError)
 	key := fs.String("key", "", "path to RSA private key (.priv.pem)")
+	force := fs.Bool("force", false, "overwrite output file if it exists")
 	_ = fs.Parse(args)
 
 	if *key == "" {
@@ -91,6 +118,11 @@ func runDecrypt(args []string) {
 	}
 	input, output := fs.Arg(0), fs.Arg(1)
 
+	if !*force {
+		if _, statErr := os.Stat(output); statErr == nil {
+			fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
+		}
+	}
 	fmt.Printf("decrypting %s → %s\n", input, output)
 	if err := mcapencrypt.Decrypt(input, output, *key); err != nil {
 		fatal(err)

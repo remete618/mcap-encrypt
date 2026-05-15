@@ -8,14 +8,14 @@ import (
 // EncryptedChunk is the on-disk format for an encrypted MCAP chunk (opcode 0x81).
 //
 // Layout:
-//   uint64 message_start_time  — plaintext, preserved for indexing
-//   uint64 message_end_time    — plaintext
-//   uint64 uncompressed_size   — plaintext, for post-decrypt verification
-//   uint32 uncompressed_crc    — plaintext, CRC32 of decompressed records
-//   string compression         — plaintext ("zstd", "lz4", or "")
-//   string key_id              — plaintext, identifies the wrapped key
-//   bytes  nonce               — 24 bytes (XChaCha20Poly1305 nonce)
-//   bytes  encrypted_data      — ciphertext of the original compressed records
+//   uint64 message_start_time  - plaintext, preserved for indexing
+//   uint64 message_end_time    - plaintext
+//   uint64 uncompressed_size   - plaintext, for post-decrypt verification
+//   uint32 uncompressed_crc    - plaintext, CRC32 of decompressed records
+//   string compression         - plaintext ("zstd", "lz4", or "")
+//   string key_id              - plaintext, identifies the wrapped key
+//   bytes  nonce               - 24 bytes (XChaCha20Poly1305 nonce)
+//   bytes  encrypted_data      - ciphertext of the original compressed records
 type EncryptedChunk struct {
 	MessageStartTime uint64
 	MessageEndTime   uint64

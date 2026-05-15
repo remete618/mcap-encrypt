@@ -53,3 +53,54 @@ describe("iterateMessages", () => {
     expect(results.filter((r) => r.topic === "/cmd")).toHaveLength(50);
   });
 });
+
+describe("adversarial", () => {
+  it("fails when ciphertext is tampered", async () => {
+    const enc = await encryptMcap(testMcap, keys.publicKeyPem);
+    const tampered = tamperedCiphertext(enc);
+    await expect(decryptMcap(tampered, keys.privateKeyPem)).rejects.toThrow();
+  });
+
+  it("fails when the wrapped key attachment is absent", async () => {
+    const enc = await encryptMcap(testMcap, keys.publicKeyPem);
+    const stripped = stripAttachment(enc);
+    await expect(decryptMcap(stripped, keys.privateKeyPem)).rejects.toThrow(
+      /wrapped key attachment/,
+    );
+  });
+});
+
+function tamperedCiphertext(data: Uint8Array): Uint8Array {
+  const view = new DataView(data.buffer, data.byteOffset);
+  let pos = 8;
+  while (pos + 9 <= data.length) {
+    const opcode = data[pos]!;
+    const length = Number(view.getBigUint64(pos + 1, true));
+    if (opcode === 0x81) {
+      const result = new Uint8Array(data);
+      result[pos + 9 + length - 1] ^= 0xff;
+      return result;
+    }
+    pos += 9 + length;
+  }
+  throw new Error("no 0x81 record found");
+}
+
+function stripAttachment(data: Uint8Array): Uint8Array {
+  const view = new DataView(data.buffer, data.byteOffset);
+  const parts: Uint8Array[] = [data.slice(0, 8)];
+  let pos = 8;
+  while (pos + 9 <= data.length) {
+    const opcode = data[pos]!;
+    const length = Number(view.getBigUint64(pos + 1, true));
+    if (opcode !== 0x09) {
+      parts.push(data.slice(pos, pos + 9 + length));
+    }
+    pos += 9 + length;
+  }
+  const total = parts.reduce((s, p) => s + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}

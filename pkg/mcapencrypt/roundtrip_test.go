@@ -129,7 +129,7 @@ func TestWrongKeyFails(t *testing.T) {
 	require.NoError(t, mcapencrypt.GenerateKeyPair(keyA))
 	require.NoError(t, mcapencrypt.GenerateKeyPair(keyB))
 
-	// Encrypt with key A, decrypt with key B — must fail.
+	// Encrypt with key A, decrypt with key B, must fail.
 	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyA+".pub.pem"))
 	err := mcapencrypt.Decrypt(encPath, decPath, keyB+".priv.pem")
 	require.Error(t, err, "decrypting with wrong key must fail")

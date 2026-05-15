@@ -8,6 +8,9 @@ export function decompressChunkData(data: Uint8Array, compression: string): Uint
     case "zstd":
       return zstdDecompress(data);
     default:
-      throw new Error(`unsupported compression: ${compression}`);
+      throw new Error(
+        `unsupported compression: "${compression}". ` +
+        `If this file uses LZ4, re-encrypt with the Go CLI (which normalizes LZ4 to zstd automatically).`,
+      );
   }
 }

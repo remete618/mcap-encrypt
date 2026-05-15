@@ -86,6 +86,13 @@ export async function encryptMcap(input: Uint8Array, publicKeyPem: string): Prom
     kekAlg: "rsa-oaep-sha256",
     wrappedKey,
   });
+  const keyAttachment = encodeAttachment(
+    BigInt(Date.now()) * 1_000_000n,
+    0n,
+    ATTACHMENT_NAME,
+    ATTACHMENT_MEDIA_TYPE,
+    wkdBytes,
+  );
 
   const reader = new BinaryReader(input);
   const writer = new BinaryWriter();
@@ -93,7 +100,20 @@ export async function encryptMcap(input: Uint8Array, publicKeyPem: string): Prom
   readMagic(reader);
   writeMagic(writer);
 
-  let wroteKey = false;
+  // Buffer schema and channel records. They are written together with the
+  // wrapped key attachment immediately before the first encrypted chunk,
+  // so decoders can start streaming decryption in a single pass.
+  const pendingSchemas: Uint8Array[] = [];
+  const pendingChannels: Uint8Array[] = [];
+  let flushed = false;
+
+  const flushPending = (): void => {
+    if (flushed) return;
+    flushed = true;
+    for (const s of pendingSchemas) writeRecord(writer, OP_SCHEMA, s);
+    for (const c of pendingChannels) writeRecord(writer, OP_CHANNEL, c);
+    writeRecord(writer, OP_ATTACHMENT, keyAttachment);
+  };
 
   outer: while (reader.remaining > 0) {
     const rec = readRecord(reader);
@@ -102,12 +122,19 @@ export async function encryptMcap(input: Uint8Array, publicKeyPem: string): Prom
 
     switch (opcode) {
       case OP_HEADER:
-      case OP_SCHEMA:
-      case OP_CHANNEL:
         writeRecord(writer, opcode, data);
         break;
 
+      case OP_SCHEMA:
+        pendingSchemas.push(new Uint8Array(data));
+        break;
+
+      case OP_CHANNEL:
+        pendingChannels.push(new Uint8Array(data));
+        break;
+
       case OP_CHUNK: {
+        flushPending();
         const chunk = parseStandardChunk(data);
         const nonce = randomBytes(NONCE_SIZE);
         const aad = chunkAAD(chunk.messageStartTime, chunk.messageEndTime);
@@ -127,22 +154,12 @@ export async function encryptMcap(input: Uint8Array, publicKeyPem: string): Prom
       }
 
       case OP_DATA_END:
-        if (!wroteKey) {
-          const attData = encodeAttachment(
-            BigInt(Date.now()) * 1_000_000n,
-            0n,
-            ATTACHMENT_NAME,
-            ATTACHMENT_MEDIA_TYPE,
-            wkdBytes,
-          );
-          writeRecord(writer, OP_ATTACHMENT, attData);
-          wroteKey = true;
-        }
+        flushPending(); // flush in case there were no chunks
         writeRecord(writer, OP_DATA_END, data);
         break;
 
       case OP_FOOTER:
-        writeRecord(writer, OP_FOOTER, new Uint8Array(20)); // empty footer: no summary section
+        writeRecord(writer, OP_FOOTER, new Uint8Array(20));
         break outer;
 
       default:

@@ -18,7 +18,8 @@ import (
 // Encrypt reads a standard MCAP file and writes an encrypted MCAP file.
 // Each chunk is encrypted with XChaCha20Poly1305. The symmetric key is
 // wrapped with the RSA-2048 public key and stored as an Attachment named
-// "mcap_encryption_key". Schemas and channels remain plaintext.
+// "mcap_encryption_key", placed before the first encrypted chunk to enable
+// single-pass streaming decryption.
 //
 // Constraints:
 //   - Input must be a chunked MCAP. Non-chunked files are rejected.
@@ -70,7 +71,9 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 		return fmt.Errorf("create output: %w", err)
 	}
 	defer func() {
-		outFile.Close()
+		if err := outFile.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("close output: %w", err)
+		}
 		if retErr != nil {
 			os.Remove(outputPath)
 		}
@@ -80,13 +83,79 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 		return err
 	}
 
-	wroteKey := false
+	// First pass: collect schema and channel records to write as plaintext.
+	// mcap.Writer places schemas/channels inside the first chunk; with
+	// EmitChunks=true the lexer only exposes summary-section copies (after
+	// DataEnd), which is too late to place before the first encrypted chunk.
+	// A quick default-mode scan captures them from the chunk contents.
+	type pendingRecord struct{ opcode byte; data []byte }
+	var pending []pendingRecord
+
+	{
+		scanFile, scanErr := os.Open(inputPath)
+		if scanErr != nil {
+			return fmt.Errorf("open input for schema scan: %w", scanErr)
+		}
+		defer scanFile.Close()
+		scanLexer, scanErr := mcap.NewLexer(scanFile)
+		if scanErr != nil {
+			return fmt.Errorf("create schema scan lexer: %w", scanErr)
+		}
+		seenSchemas := make(map[uint16]bool)
+		seenChannels := make(map[uint16]bool)
+		var scanBuf []byte
+		for {
+			tok, scanData, lexErr := scanLexer.Next(scanBuf)
+			if lexErr != nil {
+				break
+			}
+			scanBuf = scanData
+			switch tok {
+			case mcap.TokenSchema:
+				s, parseErr := mcap.ParseSchema(scanData)
+				if parseErr != nil || seenSchemas[s.ID] {
+					continue
+				}
+				seenSchemas[s.ID] = true
+				cp := make([]byte, len(scanData))
+				copy(cp, scanData)
+				pending = append(pending, pendingRecord{passthroughOpcode[mcap.TokenSchema], cp})
+			case mcap.TokenChannel:
+				c, parseErr := mcap.ParseChannel(scanData)
+				if parseErr != nil || seenChannels[c.ID] {
+					continue
+				}
+				seenChannels[c.ID] = true
+				cp := make([]byte, len(scanData))
+				copy(cp, scanData)
+				pending = append(pending, pendingRecord{passthroughOpcode[mcap.TokenChannel], cp})
+			}
+		}
+	}
+
+	flushed := false
+	flushPending := func() error {
+		if flushed {
+			return nil
+		}
+		flushed = true
+		for _, r := range pending {
+			if err := WriteRecord(outFile, r.opcode, r.data); err != nil {
+				return err
+			}
+		}
+		// Write the wrapped key attachment before the first encrypted chunk.
+		return writeAttachmentRecord(
+			outFile,
+			uint64(time.Now().UnixNano()), 0,
+			AttachmentName, AttachmentMediaType,
+			wkd.Encode(),
+		)
+	}
 
 	lexer, err := mcap.NewLexer(inFile, &mcap.LexerOptions{
 		EmitChunks: true,
 		AttachmentCallback: func(ar *mcap.AttachmentReader) error {
-			// Pass existing attachments through plaintext.
-			// NOTE: attachment content is NOT encrypted in v1.
 			data, readErr := io.ReadAll(ar.Data())
 			if readErr != nil {
 				return readErr
@@ -112,11 +181,37 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 		switch tok {
 
 		case mcap.TokenMessage:
-			// Non-chunked messages cannot be encrypted safely — reject the file.
 			return fmt.Errorf("input MCAP is not chunked: raw Message records found outside chunks; " +
 				"re-encode with chunking enabled before encrypting")
 
+		case mcap.TokenHeader:
+			op, ok := passthroughOpcode[tok]
+			if !ok {
+				return fmt.Errorf("unhandled token type %v", tok)
+			}
+			if writeErr := WriteRecord(outFile, op, data); writeErr != nil {
+				return writeErr
+			}
+
+		case mcap.TokenSchema, mcap.TokenChannel:
+			// Already collected in the first pass; skip summary-section duplicates.
+
+		case mcap.TokenMetadata:
+			if flushErr := flushPending(); flushErr != nil {
+				return flushErr
+			}
+			op, ok := passthroughOpcode[tok]
+			if !ok {
+				return fmt.Errorf("unhandled token type %v", tok)
+			}
+			if writeErr := WriteRecord(outFile, op, data); writeErr != nil {
+				return writeErr
+			}
+
 		case mcap.TokenChunk:
+			if flushErr := flushPending(); flushErr != nil {
+				return flushErr
+			}
 			chunk, parseErr := mcap.ParseChunk(data)
 			if parseErr != nil {
 				return fmt.Errorf("parse chunk: %w", parseErr)
@@ -130,23 +225,15 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 			}
 
 		case mcap.TokenDataEnd:
-			if !wroteKey {
-				if writeErr := writeAttachmentRecord(
-					outFile,
-					uint64(time.Now().UnixNano()), 0,
-					AttachmentName, AttachmentMediaType,
-					wkd.Encode(),
-				); writeErr != nil {
-					return fmt.Errorf("write wrapped key: %w", writeErr)
-				}
-				wroteKey = true
+			// Flush in case there were no chunks (schema/channel-only file).
+			if flushErr := flushPending(); flushErr != nil {
+				return flushErr
 			}
 			if writeErr := WriteRecord(outFile, opcodeDataEnd, data); writeErr != nil {
 				return writeErr
 			}
 
 		case mcap.TokenFooter:
-			// Write our own footer: SummaryStart=0 signals no summary section.
 			if writeErr := WriteRecord(outFile, opcodeFooter, emptyFooter); writeErr != nil {
 				return writeErr
 			}
@@ -157,15 +244,6 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 			// Drop: all index/offset records reference byte positions in the
 			// original file that are invalid after chunk replacement.
 
-		case mcap.TokenHeader, mcap.TokenSchema, mcap.TokenChannel, mcap.TokenMetadata:
-			op, ok := passthroughOpcode[tok]
-			if !ok {
-				return fmt.Errorf("unhandled token type %v", tok)
-			}
-			if writeErr := WriteRecord(outFile, op, data); writeErr != nil {
-				return writeErr
-			}
-
 		default:
 			return fmt.Errorf("unhandled token type %v", tok)
 		}
@@ -175,7 +253,6 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 }
 
 // passthroughOpcode maps token types that are written verbatim to their opcodes.
-// Deliberately excludes index records, chunk-related records, and Message.
 var passthroughOpcode = map[mcap.TokenType]byte{
 	mcap.TokenHeader:   0x01,
 	mcap.TokenSchema:   0x03,
@@ -193,6 +270,24 @@ func chunkAAD(startTime, endTime uint64) []byte {
 }
 
 func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string) (*EncryptedChunk, error) {
+	records := chunk.Records
+	compression := string(chunk.Compression)
+
+	// Normalize LZ4 to zstd: no pure-JS LZ4 exists, so all encrypted files
+	// must use a compression format that both Go and TypeScript can decode.
+	if compression == "lz4" {
+		decompressed, err := decompressLz4(records)
+		if err != nil {
+			return nil, fmt.Errorf("decompress lz4 for normalization: %w", err)
+		}
+		recompressed, err := compressZstd(decompressed)
+		if err != nil {
+			return nil, fmt.Errorf("recompress as zstd: %w", err)
+		}
+		records = recompressed
+		compression = "zstd"
+	}
+
 	aead, err := chacha20poly1305.NewX(symKey)
 	if err != nil {
 		return nil, err
@@ -202,14 +297,14 @@ func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string) (*EncryptedChu
 		return nil, err
 	}
 	aad := chunkAAD(chunk.MessageStartTime, chunk.MessageEndTime)
-	ciphertext := aead.Seal(nil, nonce, chunk.Records, aad)
+	ciphertext := aead.Seal(nil, nonce, records, aad)
 
 	return &EncryptedChunk{
 		MessageStartTime: chunk.MessageStartTime,
 		MessageEndTime:   chunk.MessageEndTime,
 		UncompressedSize: chunk.UncompressedSize,
 		UncompressedCRC:  chunk.UncompressedCRC,
-		Compression:      chunk.Compression,
+		Compression:      compression,
 		KeyID:            keyID,
 		Nonce:            nonce,
 		EncryptedData:    ciphertext,

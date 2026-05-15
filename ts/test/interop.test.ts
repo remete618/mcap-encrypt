@@ -7,7 +7,7 @@
  * Requires Go to be installed (checks for /opt/homebrew/bin/go or PATH).
  * Tests are skipped if the Go binary is not found.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,10 +63,16 @@ beforeAll(async () => {
   writeFileSync(join(tmpDir, "plain.mcap"), testMcap);
 }, 90_000);
 
+afterAll(() => {
+  if (tmpDir) {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 describe("interop: Go → TypeScript", () => {
   it("TypeScript decrypts a file encrypted by the Go CLI", async () => {
     if (!goBin) {
-      console.warn("Go not found — skipping interop test");
+      console.warn("Go not found, skipping interop test");
       return;
     }
 
@@ -91,7 +97,7 @@ describe("interop: Go → TypeScript", () => {
 describe("interop: TypeScript → Go", () => {
   it("Go CLI decrypts a file encrypted by the TypeScript library", async () => {
     if (!goBin) {
-      console.warn("Go not found — skipping interop test");
+      console.warn("Go not found, skipping interop test");
       return;
     }
 
