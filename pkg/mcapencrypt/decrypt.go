@@ -204,7 +204,10 @@ scan:
 
 		case OpcodeEncryptedChunk:
 			if symKey == nil {
-				return fmt.Errorf("encountered encrypted chunk before wrapped key attachment")
+				if wkaCount == 0 {
+					return fmt.Errorf("encountered encrypted chunk before wrapped key attachment")
+				}
+				return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file", wkaCount)
 			}
 			if err := ensureWriter(); err != nil {
 				return err

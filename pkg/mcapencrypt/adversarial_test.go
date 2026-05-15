@@ -82,6 +82,50 @@ func TestTamperedAAD(t *testing.T) {
 	require.Contains(t, err.Error(), "authentication failed")
 }
 
+func TestTamperedCiphertext(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	data, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+	recStart, recLen := findFirstEncryptedChunk(t, data)
+
+	// Flip a byte near the middle of the encrypted data (well past headers).
+	tampered := make([]byte, len(data))
+	copy(tampered, data)
+	tampered[recStart+recLen/2] ^= 0xFF
+
+	require.NoError(t, os.WriteFile(encPath, tampered, 0o644))
+	err = mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "authentication failed")
+}
+
+func TestWrongKeyError(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	encKey := filepath.Join(dir, "enc-key")
+	decKey := filepath.Join(dir, "dec-key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(encKey))
+	require.NoError(t, mcapencrypt.GenerateKeyPair(decKey))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, encKey+".pub.pem"))
+
+	err := mcapencrypt.Decrypt(encPath, decPath, decKey+".priv.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "private key does not match")
+}
+
 func TestNonChunkedInputRejected(t *testing.T) {
 	dir := t.TempDir()
 	flatPath := filepath.Join(dir, "flat.mcap")
