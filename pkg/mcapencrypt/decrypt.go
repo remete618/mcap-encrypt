@@ -188,6 +188,7 @@ scan:
 				continue // unexpected sym key length; skip
 			}
 			symKey = candidate
+			defer clear(symKey)
 			fileID = wkd.FileID
 
 		case OpcodeEncryptedChunk:
