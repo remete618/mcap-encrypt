@@ -7,7 +7,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
 
-> **TLDR:** Encrypts every chunk in an MCAP file with XChaCha20-Poly1305. The symmetric key is wrapped with an RSA-2048 public key and stored inside the file. Schemas and channels stay plaintext so tooling can inspect file structure without the private key. Available as a Go CLI, Go library, and TypeScript/Node.js library. Files encrypted by one implementation can be decrypted by the other.
+> 🔒 Encrypts every chunk in an MCAP file with XChaCha20-Poly1305. The symmetric key is wrapped with an RSA-2048 public key and stored inside the file. Schemas and channels stay plaintext so tooling can inspect file structure without the private key. Available as a Go CLI, Go library, and TypeScript/Node.js library. Files encrypted by one implementation can be decrypted by the other.
 
 ---
 
@@ -331,7 +331,9 @@ The following are current constraints, not bugs. The cryptographic core is corre
 
 ## License
 
-MIT
+MIT License. Copyright (c) 2026 Radu Cioplea. See [LICENSE](LICENSE) for the full text.
+
+Contact: radu@cioplea.com · [github.com/remete618](https://github.com/remete618) · [www.eyepaq.com](https://www.eyepaq.com)
 
 ---
 
