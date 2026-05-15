@@ -1,4 +1,4 @@
-import { BinaryReader, BinaryWriter } from "./binary.js";
+import { BinaryReader, BinaryWriter, safeBigintToNumber } from "./binary.js";
 
 export const MAGIC = new Uint8Array([0x89, 0x4d, 0x43, 0x41, 0x50, 0x30, 0x0d, 0x0a]);
 
@@ -34,7 +34,7 @@ export function readRecord(r: BinaryReader): RawRecord | null {
   if (r.remaining === 0) return null;
   const opcode = r.readUint8();
   const length = r.readUint64();
-  const data = r.readBytes(Number(length));
+  const data = r.readBytes(safeBigintToNumber(length, "record length"));
   return { opcode, data };
 }
 

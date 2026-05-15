@@ -1,3 +1,12 @@
+// Guard against bigint values that exceed Number.MAX_SAFE_INTEGER before
+// converting them for use as byte lengths or array indices.
+export function safeBigintToNumber(n: bigint, context: string): number {
+  if (n > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${context}: length ${n} exceeds maximum safe integer`);
+  }
+  return Number(n);
+}
+
 export class BinaryReader {
   readonly data: Uint8Array;
   private view: DataView;
