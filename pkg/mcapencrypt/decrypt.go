@@ -71,6 +71,7 @@ func streamDecrypt(r io.Reader, w io.Writer, priv *rsa.PrivateKey) error {
 
 	var (
 		symKey   []byte
+		wkaCount int // number of wrapped-key attachments found
 		schemas  []*mcap.Schema
 		channels []*mcap.Channel
 		writer   *mcap.Writer
@@ -145,14 +146,22 @@ scan:
 			if name != AttachmentName || mediaType != AttachmentMediaType {
 				continue
 			}
+			wkaCount++
+			if symKey != nil {
+				continue // already found a valid key
+			}
 			wkd, decErr := DecodeWrappedKeyData(attData)
 			if decErr != nil {
-				return fmt.Errorf("decode wrapped key: %w", decErr)
+				continue // malformed attachment; try the next one
 			}
-			symKey, err = UnwrapSymmetricKey(wkd.WrappedKey, priv)
-			if err != nil {
-				return fmt.Errorf("unwrap symmetric key: %w", err)
+			candidate, unwrapErr := UnwrapSymmetricKey(wkd.WrappedKey, priv)
+			if unwrapErr != nil {
+				continue // wrong recipient; try the next attachment
 			}
+			if len(candidate) != 32 {
+				continue // unexpected sym key length; skip
+			}
+			symKey = candidate
 
 		case OpcodeEncryptedChunk:
 			if symKey == nil {
@@ -192,7 +201,10 @@ scan:
 	}
 
 	if symKey == nil {
-		return fmt.Errorf("no wrapped key attachment found, is this an encrypted MCAP file?")
+		if wkaCount == 0 {
+			return fmt.Errorf("no wrapped key attachment found: is this an encrypted MCAP file?")
+		}
+		return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file", wkaCount)
 	}
 	if err := ensureWriter(); err != nil {
 		return err

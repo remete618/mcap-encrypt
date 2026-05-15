@@ -18,12 +18,22 @@ export function decodeWrappedKeyData(data: Uint8Array): WrappedKeyData {
     throw new Error(`unsupported wrapped key version ${data[0]}`);
   }
   const r = new BinaryReader(data.subarray(1));
-  return {
+  const wkd: WrappedKeyData = {
     keyId: r.readString(),
     algorithm: r.readString(),
     kekAlg: r.readString(),
     wrappedKey: new Uint8Array(r.readPrefixedBytes()),
   };
+  if (wkd.algorithm !== "xchacha20poly1305") {
+    throw new Error(`unsupported encryption algorithm "${wkd.algorithm}" (want xchacha20poly1305)`);
+  }
+  if (wkd.kekAlg !== "rsa-oaep-sha256") {
+    throw new Error(`unsupported key-wrapping algorithm "${wkd.kekAlg}" (want rsa-oaep-sha256)`);
+  }
+  if (wkd.wrappedKey.length !== 256) {
+    throw new Error(`wrapped key length ${wkd.wrappedKey.length} invalid (RSA-2048 produces 256 bytes)`);
+  }
+  return wkd;
 }
 
 export function encodeWrappedKeyData(wkd: WrappedKeyData): Uint8Array {

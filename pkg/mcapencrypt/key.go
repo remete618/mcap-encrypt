@@ -93,6 +93,16 @@ func DecodeWrappedKeyData(data []byte) (*WrappedKeyData, error) {
 	if k.WrappedKey, err = getBytes(); err != nil {
 		return nil, fmt.Errorf("read wrapped_key: %w", err)
 	}
+
+	if k.Algorithm != "xchacha20poly1305" {
+		return nil, fmt.Errorf("unsupported encryption algorithm %q (want xchacha20poly1305)", k.Algorithm)
+	}
+	if k.KEKAlg != "rsa-oaep-sha256" {
+		return nil, fmt.Errorf("unsupported key-wrapping algorithm %q (want rsa-oaep-sha256)", k.KEKAlg)
+	}
+	if len(k.WrappedKey) != 256 {
+		return nil, fmt.Errorf("wrapped key length %d invalid (RSA-2048 produces 256 bytes)", len(k.WrappedKey))
+	}
 	return k, nil
 }
 

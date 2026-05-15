@@ -331,7 +331,9 @@ async function tryUnwrapKey(
 ): Promise<Uint8Array | undefined> {
   try {
     const wkd = decodeWrappedKeyData(attData);
-    return await unwrapSymmetricKey(wkd.wrappedKey, privateKeyPem);
+    const symKey = await unwrapSymmetricKey(wkd.wrappedKey, privateKeyPem);
+    if (symKey.length !== 32) return undefined;
+    return symKey;
   } catch {
     return undefined;
   }
