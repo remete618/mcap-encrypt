@@ -67,6 +67,20 @@ Decryption is single-pass: all wrapped-key attachments appear before the first e
 - Schema and channel metadata (intentionally plaintext for tool compatibility).
 - Against an attacker who has the private key.
 
+**What leaks to anyone who can read the file (no key required):**
+
+| Leaked field | Where |
+|---|---|
+| Number of topics and their names | Channel records |
+| Message schema names and encodings (e.g. , ) | Schema records |
+| Number of chunks and the time range of each | EncryptedChunk  /  |
+| Approximate per-chunk compressed size | EncryptedChunk record length |
+| Compression algorithm per chunk | EncryptedChunk  field |
+| Attachment names and media types (non-key attachments) | Attachment records |
+| Number of recipients and their key fingerprints | WrappedKey Attachment  field |
+
+If any of the above is sensitive, do not use this tool without additional measures (e.g. strip topic names before encrypting, or use a single-recipient deployment where key fingerprints are not a concern).
+
 ---
 
 ## Install
