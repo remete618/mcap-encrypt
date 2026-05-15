@@ -3,22 +3,27 @@ import { BinaryReader, BinaryWriter } from "./binary.js";
 export const ATTACHMENT_NAME = "mcap_encryption_key";
 export const ATTACHMENT_MEDIA_TYPE = "application/x-mcap-wrapped-key";
 
+const FILE_ID_SIZE = 16;
+const WRAPPED_KEY_VERSION = 2;
+
 export interface WrappedKeyData {
+  fileId: Uint8Array; // 16 random bytes, same for every recipient of a given file
   keyId: string;
   algorithm: string;
   kekAlg: string;
   wrappedKey: Uint8Array;
 }
 
-const WRAPPED_KEY_VERSION = 1;
-
 export function decodeWrappedKeyData(data: Uint8Array): WrappedKeyData {
   if (data.length < 1) throw new Error("wrapped key data too short");
   if (data[0] !== WRAPPED_KEY_VERSION) {
-    throw new Error(`unsupported wrapped key version ${data[0]}`);
+    throw new Error(`unsupported wrapped key version ${data[0]} (want ${WRAPPED_KEY_VERSION})`);
   }
-  const r = new BinaryReader(data.subarray(1));
+  if (data.length < 1 + FILE_ID_SIZE) throw new Error("wrapped key data too short for file_id");
+  const fileId = new Uint8Array(data.subarray(1, 1 + FILE_ID_SIZE));
+  const r = new BinaryReader(data.subarray(1 + FILE_ID_SIZE));
   const wkd: WrappedKeyData = {
+    fileId,
     keyId: r.readString(),
     algorithm: r.readString(),
     kekAlg: r.readString(),
@@ -39,6 +44,7 @@ export function decodeWrappedKeyData(data: Uint8Array): WrappedKeyData {
 export function encodeWrappedKeyData(wkd: WrappedKeyData): Uint8Array {
   const w = new BinaryWriter();
   w.writeUint8(WRAPPED_KEY_VERSION);
+  w.writeBytes(wkd.fileId);
   w.writeString(wkd.keyId);
   w.writeString(wkd.algorithm);
   w.writeString(wkd.kekAlg);

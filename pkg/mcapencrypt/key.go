@@ -14,11 +14,13 @@ import (
 const (
 	AttachmentName      = "mcap_encryption_key"
 	AttachmentMediaType = "application/x-mcap-wrapped-key"
-	wrappedKeyVersion   = byte(1)
+	wrappedKeyVersion   = byte(2)
+	fileIDSize          = 16
 )
 
 // WrappedKeyData is the binary payload stored inside the WrappedKey Attachment.
 type WrappedKeyData struct {
+	FileID     []byte // 16 random bytes, same for every recipient of a given file
 	KeyID      string
 	Algorithm  string // "xchacha20poly1305"
 	KEKAlg     string // "rsa-oaep-sha256"
@@ -31,6 +33,7 @@ func (k *WrappedKeyData) Encode() []byte {
 	kekAlg := []byte(k.KEKAlg)
 
 	n := 1 +
+		fileIDSize +
 		4 + len(keyID) +
 		4 + len(alg) +
 		4 + len(kekAlg) +
@@ -41,6 +44,8 @@ func (k *WrappedKeyData) Encode() []byte {
 
 	buf[o] = wrappedKeyVersion
 	o++
+	copy(buf[o:], k.FileID)
+	o += fileIDSize
 	putBytes := func(b []byte) {
 		binary.LittleEndian.PutUint32(buf[o:], uint32(len(b)))
 		o += 4
@@ -59,10 +64,15 @@ func DecodeWrappedKeyData(data []byte) (*WrappedKeyData, error) {
 		return nil, fmt.Errorf("empty wrapped key data")
 	}
 	if data[0] != wrappedKeyVersion {
-		return nil, fmt.Errorf("unsupported wrapped key version %d", data[0])
+		return nil, fmt.Errorf("unsupported wrapped key version %d (want %d)", data[0], wrappedKeyVersion)
+	}
+	if len(data) < 1+fileIDSize {
+		return nil, fmt.Errorf("truncated: too short for file_id")
 	}
 	k := &WrappedKeyData{}
-	o := 1
+	k.FileID = make([]byte, fileIDSize)
+	copy(k.FileID, data[1:1+fileIDSize])
+	o := 1 + fileIDSize
 
 	getBytes := func() ([]byte, error) {
 		if o+4 > len(data) {

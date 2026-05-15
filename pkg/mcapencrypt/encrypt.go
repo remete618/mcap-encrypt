@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -15,16 +17,26 @@ import (
 	"github.com/foxglove/mcap/go/mcap"
 )
 
-// Encrypt reads a standard MCAP file and writes an encrypted MCAP file.
-// Each chunk is encrypted with XChaCha20Poly1305. The symmetric key is
-// wrapped with the RSA-2048 public key and stored as an Attachment named
-// "mcap_encryption_key", placed before the first encrypted chunk to enable
-// single-pass streaming decryption.
+// Encrypt encrypts a standard MCAP file using a single RSA public key.
+func Encrypt(inputPath, outputPath, pubKeyPath string) error {
+	return EncryptMulti(inputPath, outputPath, []string{pubKeyPath})
+}
+
+// EncryptMulti encrypts a standard MCAP file. The symmetric key is wrapped
+// separately with each public key in pubKeyPaths and stored as individual
+// attachments; any of the corresponding private keys can decrypt the file.
 //
 // Constraints:
 //   - Input must be a chunked MCAP. Non-chunked files are rejected.
 //   - inputPath and outputPath must differ.
-func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
+//   - At least one public key must be provided.
+//
+// Chunks are encrypted concurrently using all available CPU cores.
+func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr error) {
+	if len(pubKeyPaths) == 0 {
+		return fmt.Errorf("at least one public key is required")
+	}
+
 	absIn, err := filepath.Abs(inputPath)
 	if err != nil {
 		return fmt.Errorf("resolve input path: %w", err)
@@ -37,58 +49,43 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 		return fmt.Errorf("inputPath and outputPath must differ")
 	}
 
-	pub, err := LoadPublicKey(pubKeyPath)
-	if err != nil {
-		return fmt.Errorf("load public key: %w", err)
-	}
-
 	symKey := make([]byte, chacha20poly1305.KeySize)
 	if _, err := rand.Read(symKey); err != nil {
 		return fmt.Errorf("generate symmetric key: %w", err)
 	}
-
-	wrapped, err := WrapSymmetricKey(symKey, pub)
-	if err != nil {
-		return fmt.Errorf("wrap symmetric key: %w", err)
+	fileID := make([]byte, fileIDSize)
+	if _, err := rand.Read(fileID); err != nil {
+		return fmt.Errorf("generate file ID: %w", err)
 	}
 
-	const keyID = "key-1"
-	wkd := &WrappedKeyData{
-		KeyID:      keyID,
-		Algorithm:  "xchacha20poly1305",
-		KEKAlg:     "rsa-oaep-sha256",
-		WrappedKey: wrapped,
-	}
-
-	inFile, err := os.Open(inputPath)
-	if err != nil {
-		return fmt.Errorf("open input: %w", err)
-	}
-	defer inFile.Close()
-
-	outFile, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("create output: %w", err)
-	}
-	defer func() {
-		if err := outFile.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("close output: %w", err)
+	// Wrap the symmetric key for each recipient.
+	wkds := make([]*WrappedKeyData, len(pubKeyPaths))
+	for i, path := range pubKeyPaths {
+		pub, loadErr := LoadPublicKey(path)
+		if loadErr != nil {
+			return fmt.Errorf("load public key %d: %w", i+1, loadErr)
 		}
-		if retErr != nil {
-			os.Remove(outputPath)
+		wrapped, wrapErr := WrapSymmetricKey(symKey, pub)
+		if wrapErr != nil {
+			return fmt.Errorf("wrap key for recipient %d: %w", i+1, wrapErr)
 		}
-	}()
-
-	if err := WriteMagic(outFile); err != nil {
-		return err
+		wkds[i] = &WrappedKeyData{
+			FileID:     fileID,
+			KeyID:      fmt.Sprintf("key-%d", i+1),
+			Algorithm:  "xchacha20poly1305",
+			KEKAlg:     "rsa-oaep-sha256",
+			WrappedKey: wrapped,
+		}
 	}
 
-	// First pass: collect schema and channel records to write as plaintext.
-	// mcap.Writer places schemas/channels inside the first chunk; with
-	// EmitChunks=true the lexer only exposes summary-section copies (after
-	// DataEnd), which is too late to place before the first encrypted chunk.
-	// A quick default-mode scan captures them from the chunk contents.
-	type pendingRecord struct{ opcode byte; data []byte }
+	// --- Pass 1: collect schemas and channels from inside chunk records. ---
+	// mcap.Lexer with EmitChunks=true only yields Schema/Channel from the
+	// summary section (after DataEnd). A default-mode scan reads them from
+	// inside decompressed chunk contents.
+	type pendingRecord struct {
+		opcode byte
+		data   []byte
+	}
 	var pending []pendingRecord
 
 	{
@@ -133,25 +130,47 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 		}
 	}
 
+	// --- Pass 2: collect all records as write-ops; buffer raw chunks. ---
+	// Chunks are not encrypted here; they are collected for concurrent
+	// encryption after the full scan is complete.
+	type writeOp struct {
+		opcode   byte
+		data     []byte
+		chunkIdx int // -1 for regular records; >=0 indexes rawChunks
+	}
+	var ops []writeOp
+	var rawChunks []*mcap.Chunk
+
 	flushed := false
-	flushPending := func() error {
+	flushPending := func() {
 		if flushed {
-			return nil
+			return
 		}
 		flushed = true
 		for _, r := range pending {
-			if err := WriteRecord(outFile, r.opcode, r.data); err != nil {
-				return err
-			}
+			ops = append(ops, writeOp{r.opcode, r.data, -1})
 		}
-		// Write the wrapped key attachment before the first encrypted chunk.
-		return writeAttachmentRecord(
-			outFile,
-			uint64(time.Now().UnixNano()), 0,
-			AttachmentName, AttachmentMediaType,
-			wkd.Encode(),
-		)
+		// Write a wrapped-key attachment for each recipient immediately
+		// before the first encrypted chunk so decoders can stream in one pass.
+		now := uint64(time.Now().UnixNano())
+		for _, wkd := range wkds {
+			attBytes := buildAttachmentBytes(now, 0, AttachmentName, AttachmentMediaType, wkd.Encode())
+			ops = append(ops, writeOp{opcodeAttach, attBytes, -1})
+		}
 	}
+
+	// copy returns an independent copy of d, needed because lexer reuses buffers.
+	cp := func(d []byte) []byte {
+		c := make([]byte, len(d))
+		copy(c, d)
+		return c
+	}
+
+	inFile, err := os.Open(inputPath)
+	if err != nil {
+		return fmt.Errorf("open input: %w", err)
+	}
+	defer inFile.Close()
 
 	lexer, err := mcap.NewLexer(inFile, &mcap.LexerOptions{
 		EmitChunks: true,
@@ -160,7 +179,9 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 			if readErr != nil {
 				return readErr
 			}
-			return writeAttachmentRecord(outFile, ar.LogTime, ar.CreateTime, ar.Name, ar.MediaType, data)
+			attBytes := buildAttachmentBytes(ar.LogTime, ar.CreateTime, ar.Name, ar.MediaType, data)
+			ops = append(ops, writeOp{opcodeAttach, attBytes, -1})
+			return nil
 		},
 	})
 	if err != nil {
@@ -179,7 +200,6 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 		tokenBuf = data
 
 		switch tok {
-
 		case mcap.TokenMessage:
 			return fmt.Errorf("input MCAP is not chunked: raw Message records found outside chunks; " +
 				"re-encode with chunking enabled before encrypting")
@@ -189,59 +209,44 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 			if !ok {
 				return fmt.Errorf("unhandled token type %v", tok)
 			}
-			if writeErr := WriteRecord(outFile, op, data); writeErr != nil {
-				return writeErr
-			}
+			ops = append(ops, writeOp{op, cp(data), -1})
 
 		case mcap.TokenSchema, mcap.TokenChannel:
-			// Already collected in the first pass; skip summary-section duplicates.
+			// Skip: already collected in pass 1 from inside chunks.
 
 		case mcap.TokenMetadata:
-			if flushErr := flushPending(); flushErr != nil {
-				return flushErr
-			}
+			flushPending()
 			op, ok := passthroughOpcode[tok]
 			if !ok {
 				return fmt.Errorf("unhandled token type %v", tok)
 			}
-			if writeErr := WriteRecord(outFile, op, data); writeErr != nil {
-				return writeErr
-			}
+			ops = append(ops, writeOp{op, cp(data), -1})
 
 		case mcap.TokenChunk:
-			if flushErr := flushPending(); flushErr != nil {
-				return flushErr
-			}
+			flushPending()
 			chunk, parseErr := mcap.ParseChunk(data)
 			if parseErr != nil {
 				return fmt.Errorf("parse chunk: %w", parseErr)
 			}
-			enc, encErr := encryptChunk(chunk, symKey, keyID)
-			if encErr != nil {
-				return fmt.Errorf("encrypt chunk: %w", encErr)
-			}
-			if writeErr := WriteRecord(outFile, OpcodeEncryptedChunk, enc.Encode()); writeErr != nil {
-				return writeErr
-			}
+			// Copy Records: chunk.Records slices into the reused tokenBuf.
+			recsCopy := make([]byte, len(chunk.Records))
+			copy(recsCopy, chunk.Records)
+			chunk.Records = recsCopy
+			ops = append(ops, writeOp{0, nil, len(rawChunks)})
+			rawChunks = append(rawChunks, chunk)
 
 		case mcap.TokenDataEnd:
-			// Flush in case there were no chunks (schema/channel-only file).
-			if flushErr := flushPending(); flushErr != nil {
-				return flushErr
-			}
-			if writeErr := WriteRecord(outFile, opcodeDataEnd, data); writeErr != nil {
-				return writeErr
-			}
+			// Flush for schema/channel-only files with no chunks.
+			flushPending()
+			ops = append(ops, writeOp{opcodeDataEnd, cp(data), -1})
 
 		case mcap.TokenFooter:
-			if writeErr := WriteRecord(outFile, opcodeFooter, emptyFooter); writeErr != nil {
-				return writeErr
-			}
+			ops = append(ops, writeOp{opcodeFooter, cp(emptyFooter), -1})
 
 		case mcap.TokenMessageIndex, mcap.TokenChunkIndex,
 			mcap.TokenStatistics, mcap.TokenSummaryOffset,
 			mcap.TokenAttachmentIndex, mcap.TokenMetadataIndex:
-			// Drop: all index/offset records reference byte positions in the
+			// Drop: all index records reference byte positions in the
 			// original file that are invalid after chunk replacement.
 
 		default:
@@ -249,6 +254,58 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) (retErr error) {
 		}
 	}
 
+	// --- Concurrent chunk encryption. ---
+	// Each chunk is encrypted independently; results are stored in order.
+	const keyID = "key-1"
+	encChunks := make([]*EncryptedChunk, len(rawChunks))
+	encErrs := make([]error, len(rawChunks))
+
+	sem := make(chan struct{}, runtime.NumCPU())
+	var wg sync.WaitGroup
+	for i, chunk := range rawChunks {
+		wg.Add(1)
+		go func(i int, chunk *mcap.Chunk) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			encChunks[i], encErrs[i] = encryptChunk(chunk, symKey, keyID, fileID, i)
+		}(i, chunk)
+	}
+	wg.Wait()
+	for _, encErr := range encErrs {
+		if encErr != nil {
+			return fmt.Errorf("encrypt chunk: %w", encErr)
+		}
+	}
+
+	// --- Write output. ---
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("create output: %w", err)
+	}
+	defer func() {
+		if err := outFile.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("close output: %w", err)
+		}
+		if retErr != nil {
+			os.Remove(outputPath)
+		}
+	}()
+
+	if err := WriteMagic(outFile); err != nil {
+		return err
+	}
+	for _, op := range ops {
+		if op.chunkIdx >= 0 {
+			if err := WriteRecord(outFile, OpcodeEncryptedChunk, encChunks[op.chunkIdx].Encode()); err != nil {
+				return err
+			}
+		} else {
+			if err := WriteRecord(outFile, op.opcode, op.data); err != nil {
+				return err
+			}
+		}
+	}
 	return WriteMagic(outFile)
 }
 
@@ -260,16 +317,30 @@ var passthroughOpcode = map[mcap.TokenType]byte{
 	mcap.TokenMetadata: 0x0C,
 }
 
-// chunkAAD encodes chunk time bounds as AEAD additional data (16 bytes).
-// Binding this prevents ciphertext chunks from being swapped between files.
-func chunkAAD(startTime, endTime uint64) []byte {
-	aad := make([]byte, 16)
-	binary.LittleEndian.PutUint64(aad[0:], startTime)
-	binary.LittleEndian.PutUint64(aad[8:], endTime)
-	return aad
+// chunkAAD builds the AEAD additional data for one encrypted chunk.
+// It binds: file identity, chunk position, key identity, compression
+// parameters, and time bounds. Any modification to these plaintext fields
+// or the ciphertext will cause authentication to fail.
+func chunkAAD(fileID []byte, chunkIdx uint64, keyID, compression string, uncompressedSize uint64, uncompressedCRC uint32, startTime, endTime uint64) []byte {
+	putStr := func(buf []byte, s string) []byte {
+		var n [4]byte
+		binary.LittleEndian.PutUint32(n[:], uint32(len(s)))
+		buf = append(buf, n[:]...)
+		return append(buf, s...)
+	}
+	buf := make([]byte, 0, fileIDSize+8+4+len(keyID)+4+len(compression)+8+4+8+8)
+	buf = append(buf, fileID...)
+	buf = binary.LittleEndian.AppendUint64(buf, chunkIdx)
+	buf = putStr(buf, keyID)
+	buf = putStr(buf, compression)
+	buf = binary.LittleEndian.AppendUint64(buf, uncompressedSize)
+	buf = binary.LittleEndian.AppendUint32(buf, uncompressedCRC)
+	buf = binary.LittleEndian.AppendUint64(buf, startTime)
+	buf = binary.LittleEndian.AppendUint64(buf, endTime)
+	return buf
 }
 
-func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string) (*EncryptedChunk, error) {
+func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string, fileID []byte, chunkIdx int) (*EncryptedChunk, error) {
 	records := chunk.Records
 	compression := string(chunk.Compression)
 
@@ -296,7 +367,7 @@ func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string) (*EncryptedChu
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	aad := chunkAAD(chunk.MessageStartTime, chunk.MessageEndTime)
+	aad := chunkAAD(fileID, uint64(chunkIdx), keyID, compression, chunk.UncompressedSize, chunk.UncompressedCRC, chunk.MessageStartTime, chunk.MessageEndTime)
 	ciphertext := aead.Seal(nil, nonce, records, aad)
 
 	return &EncryptedChunk{
@@ -311,9 +382,9 @@ func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string) (*EncryptedChu
 	}, nil
 }
 
-// writeAttachmentRecord serializes a full MCAP Attachment record (opcode 0x09).
+// buildAttachmentBytes serializes an MCAP Attachment record payload.
 // CRC field is written as 0 (validation skipped).
-func writeAttachmentRecord(w io.Writer, logTime, createTime uint64, name, mediaType string, data []byte) error {
+func buildAttachmentBytes(logTime, createTime uint64, name, mediaType string, data []byte) []byte {
 	nb := []byte(name)
 	mb := []byte(mediaType)
 	size := 8 + 8 + 4 + len(nb) + 4 + len(mb) + 8 + len(data) + 4
@@ -322,7 +393,6 @@ func writeAttachmentRecord(w io.Writer, logTime, createTime uint64, name, mediaT
 	put64 := func(v uint64) { binary.LittleEndian.PutUint64(buf[o:], v); o += 8 }
 	put32 := func(v uint32) { binary.LittleEndian.PutUint32(buf[o:], v); o += 4 }
 	putStr := func(b []byte) { put32(uint32(len(b))); copy(buf[o:], b); o += len(b) }
-
 	put64(logTime)
 	put64(createTime)
 	putStr(nb)
@@ -332,6 +402,10 @@ func writeAttachmentRecord(w io.Writer, logTime, createTime uint64, name, mediaT
 	o += len(data)
 	put32(0) // CRC = 0
 	_ = o
+	return buf
+}
 
-	return WriteRecord(w, opcodeAttach, buf)
+// writeAttachmentRecord serializes and writes a full MCAP Attachment record.
+func writeAttachmentRecord(w io.Writer, logTime, createTime uint64, name, mediaType string, data []byte) error {
+	return WriteRecord(w, opcodeAttach, buildAttachmentBytes(logTime, createTime, name, mediaType, data))
 }

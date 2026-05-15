@@ -298,6 +298,8 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
 async function decryptAndVerifyChunk(
   data: Uint8Array,
   symKey: Uint8Array,
+  fileId: Uint8Array,
+  chunkIdx: bigint,
 ): Promise<Message[]> {
   const ec = decodeEncryptedChunk(data);
   if (ec.nonce.length !== 24) {
@@ -310,7 +312,11 @@ async function decryptAndVerifyChunk(
       `chunk [${ec.messageStartTime}–${ec.messageEndTime}]: ciphertext too short (${ec.encryptedData.length} bytes, minimum 16)`,
     );
   }
-  const aad = chunkAAD(ec.messageStartTime, ec.messageEndTime);
+  const aad = chunkAAD(
+    fileId, chunkIdx, ec.keyId, ec.compression,
+    ec.uncompressedSize, ec.uncompressedCrc,
+    ec.messageStartTime, ec.messageEndTime,
+  );
   let plaintext: Uint8Array;
   try {
     plaintext = xchacha20poly1305(symKey, ec.nonce, aad).decrypt(ec.encryptedData);
@@ -344,12 +350,12 @@ async function decryptAndVerifyChunk(
 async function tryUnwrapKey(
   attData: Uint8Array,
   privateKeyPem: string,
-): Promise<Uint8Array | undefined> {
+): Promise<{ symKey: Uint8Array; fileId: Uint8Array } | undefined> {
   try {
     const wkd = decodeWrappedKeyData(attData);
     const symKey = await unwrapSymmetricKey(wkd.wrappedKey, privateKeyPem);
     if (symKey.length !== 32) return undefined;
-    return symKey;
+    return { symKey, fileId: wkd.fileId };
   } catch {
     return undefined;
   }
@@ -364,7 +370,8 @@ async function* streamMessages(
   const r = new BinaryReader(input);
   readMagic(r);
 
-  let symKey: Uint8Array | undefined;
+  let unwrapped: { symKey: Uint8Array; fileId: Uint8Array } | undefined;
+  let chunkIdx = 0n;
   let wkaCount = 0;
   const schemaMap = new Map<number, Schema>();
   const channelMap = new Map<number, Channel>();
@@ -389,18 +396,19 @@ async function* streamMessages(
         const att = parseAttachment(new Uint8Array(data));
         if (att.name === ATTACHMENT_NAME && att.mediaType === ATTACHMENT_MEDIA_TYPE) {
           wkaCount++;
-          if (!symKey) {
-            symKey = await tryUnwrapKey(att.data, privateKeyPem);
+          if (!unwrapped) {
+            unwrapped = await tryUnwrapKey(att.data, privateKeyPem);
           }
         }
         break;
       }
       case OP_ENCRYPTED_CHUNK: {
-        if (!symKey) {
+        if (!unwrapped) {
           if (wkaCount === 0) throw new Error("encountered encrypted chunk before wrapped key attachment");
           throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
         }
-        for (const msg of await decryptAndVerifyChunk(new Uint8Array(data), symKey)) {
+        for (const msg of await decryptAndVerifyChunk(new Uint8Array(data), unwrapped.symKey, unwrapped.fileId, chunkIdx)) {
+          chunkIdx++;
           const channel = channelMap.get(msg.channelId);
           const schema = channel ? schemaMap.get(channel.schemaId) : undefined;
           if (channel && schema) yield { schema, channel, message: msg };
@@ -412,7 +420,7 @@ async function* streamMessages(
     }
   }
 
-  if (!symKey) {
+  if (!unwrapped) {
     if (wkaCount === 0) throw new Error("no wrapped key attachment found: is this an encrypted MCAP file?");
     throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
   }
@@ -424,7 +432,8 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
   const r = new BinaryReader(input);
   readMagic(r);
 
-  let symKey: Uint8Array | undefined;
+  let unwrapped: { symKey: Uint8Array; fileId: Uint8Array } | undefined;
+  let chunkIdx = 0n;
   let wkaCount = 0;
   const schemas: Schema[] = [];
   const channels: Channel[] = [];
@@ -446,18 +455,19 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
         const att = parseAttachment(new Uint8Array(data));
         if (att.name === ATTACHMENT_NAME && att.mediaType === ATTACHMENT_MEDIA_TYPE) {
           wkaCount++;
-          if (!symKey) {
-            symKey = await tryUnwrapKey(att.data, privateKeyPem);
+          if (!unwrapped) {
+            unwrapped = await tryUnwrapKey(att.data, privateKeyPem);
           }
         }
         break;
       }
       case OP_ENCRYPTED_CHUNK: {
-        if (!symKey) {
+        if (!unwrapped) {
           if (wkaCount === 0) throw new Error("encountered encrypted chunk before wrapped key attachment");
           throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
         }
-        messages.push(...(await decryptAndVerifyChunk(new Uint8Array(data), symKey)));
+        messages.push(...(await decryptAndVerifyChunk(new Uint8Array(data), unwrapped.symKey, unwrapped.fileId, chunkIdx)));
+        chunkIdx++;
         break;
       }
       case OP_FOOTER:
@@ -465,7 +475,7 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
     }
   }
 
-  if (!symKey) {
+  if (!unwrapped) {
     if (wkaCount === 0) throw new Error("no wrapped key attachment found: is this an encrypted MCAP file?");
     throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
   }

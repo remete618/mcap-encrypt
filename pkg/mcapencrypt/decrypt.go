@@ -70,11 +70,13 @@ func streamDecrypt(r io.Reader, w io.Writer, priv *rsa.PrivateKey) error {
 	}
 
 	var (
-		symKey   []byte
-		wkaCount int // number of wrapped-key attachments found
-		schemas  []*mcap.Schema
-		channels []*mcap.Channel
-		writer   *mcap.Writer
+		symKey    []byte
+		fileID    []byte
+		chunkIdx  uint64
+		wkaCount  int // number of wrapped-key attachments found
+		schemas   []*mcap.Schema
+		channels  []*mcap.Channel
+		writer    *mcap.Writer
 	)
 
 	// ensureWriter initialises the McapWriter on first EncryptedChunk, writing
@@ -162,6 +164,7 @@ scan:
 				continue // unexpected sym key length; skip
 			}
 			symKey = candidate
+			fileID = wkd.FileID
 
 		case OpcodeEncryptedChunk:
 			if symKey == nil {
@@ -186,11 +189,12 @@ scan:
 			if cipherErr != nil {
 				return fmt.Errorf("create cipher: %w", cipherErr)
 			}
-			aad := chunkAAD(ec.MessageStartTime, ec.MessageEndTime)
+			aad := chunkAAD(fileID, chunkIdx, ec.KeyID, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC, ec.MessageStartTime, ec.MessageEndTime)
 			plaintext, openErr := aead.Open(nil, ec.Nonce, ec.EncryptedData, aad)
 			if openErr != nil {
 				return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, openErr)
 			}
+			chunkIdx++
 			msgs, parseErr := parseChunkRecords(plaintext, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC)
 			if parseErr != nil {
 				return fmt.Errorf("parse decrypted chunk: %w", parseErr)

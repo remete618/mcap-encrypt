@@ -33,12 +33,30 @@ function randomBytes(n: number): Uint8Array {
   return buf;
 }
 
-export function chunkAAD(startTime: bigint, endTime: bigint): Uint8Array {
-  const aad = new Uint8Array(16);
-  const view = new DataView(aad.buffer);
-  view.setBigUint64(0, startTime, true);
-  view.setBigUint64(8, endTime, true);
-  return aad;
+// chunkAAD builds the AEAD additional data for one encrypted chunk.
+// It binds: file identity, chunk position, key identity, compression
+// parameters, and time bounds. Any modification to these plaintext fields
+// or the ciphertext will cause authentication to fail.
+export function chunkAAD(
+  fileId: Uint8Array,
+  chunkIdx: bigint,
+  keyId: string,
+  compression: string,
+  uncompressedSize: bigint,
+  uncompressedCrc: number,
+  startTime: bigint,
+  endTime: bigint,
+): Uint8Array {
+  const w = new BinaryWriter();
+  w.writeBytes(fileId); // 16 bytes
+  w.writeUint64(chunkIdx);
+  w.writeString(keyId); // 4-byte length prefix + bytes
+  w.writeString(compression);
+  w.writeUint64(uncompressedSize);
+  w.writeUint32(uncompressedCrc);
+  w.writeUint64(startTime);
+  w.writeUint64(endTime);
+  return w.toUint8Array();
 }
 
 function parseStandardChunk(data: Uint8Array): {
@@ -86,6 +104,7 @@ export async function encryptMcap(
   if (pubKeys.length === 0) throw new Error("at least one public key is required");
 
   const symKey = randomBytes(KEY_SIZE);
+  const fileId = randomBytes(16);
   const now = BigInt(Date.now()) * 1_000_000n;
 
   // Wrap the symmetric key for each recipient; store as separate attachments.
@@ -93,6 +112,7 @@ export async function encryptMcap(
   for (let i = 0; i < pubKeys.length; i++) {
     const wrappedKey = await wrapSymmetricKey(symKey, pubKeys[i]!);
     const wkdBytes = encodeWrappedKeyData({
+      fileId,
       keyId: `key-${i + 1}`,
       algorithm: "xchacha20poly1305",
       kekAlg: "rsa-oaep-sha256",
@@ -122,6 +142,8 @@ export async function encryptMcap(
     for (const att of keyAttachments) writeRecord(writer, OP_ATTACHMENT, att);
   };
 
+  let chunkIdx = 0n;
+
   outer: while (reader.remaining > 0) {
     const rec = readRecord(reader);
     if (!rec) break;
@@ -143,16 +165,22 @@ export async function encryptMcap(
       case OP_CHUNK: {
         flushPending();
         const chunk = parseStandardChunk(data);
+        const keyId = "key-1";
         const nonce = randomBytes(NONCE_SIZE);
-        const aad = chunkAAD(chunk.messageStartTime, chunk.messageEndTime);
+        const aad = chunkAAD(
+          fileId, chunkIdx, keyId, chunk.compression,
+          chunk.uncompressedSize, chunk.uncompressedCrc,
+          chunk.messageStartTime, chunk.messageEndTime,
+        );
         const ciphertext = xchacha20poly1305(symKey, nonce, aad).encrypt(chunk.records);
+        chunkIdx++;
         const ec: EncryptedChunk = {
           messageStartTime: chunk.messageStartTime,
           messageEndTime: chunk.messageEndTime,
           uncompressedSize: chunk.uncompressedSize,
           uncompressedCrc: chunk.uncompressedCrc,
           compression: chunk.compression,
-          keyId: "key-1",
+          keyId,
           nonce,
           encryptedData: ciphertext,
         };
