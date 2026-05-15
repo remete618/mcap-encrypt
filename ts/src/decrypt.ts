@@ -24,6 +24,7 @@ import {
   parseSchema,
   parseChannel,
   parseMessage,
+  parseHeader,
   encodeSchema,
   encodeChannel,
   encodeMessage,
@@ -76,7 +77,7 @@ function parseInnerRecords(decompressed: Uint8Array): Message[] {
 // schemas, channels, and messages. All messages are placed in a single
 // uncompressed chunk followed by MessageIndex records, then a complete summary
 // section with ChunkIndex, Statistics, and SummaryOffset records.
-function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Message[]): Uint8Array {
+function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Message[], profile = "", library = "mcap-encrypt"): Uint8Array {
   const parts: Uint8Array[] = [];
   let pos = 0n;
 
@@ -107,7 +108,7 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
   emit(MCAP_MAGIC.slice());
 
   // Header
-  emitRecord(OP_HEADER, w((b) => { b.writeString(""); b.writeString("mcap-encrypt"); }));
+  emitRecord(OP_HEADER, w((b) => { b.writeString(profile); b.writeString(library); }));
 
   // Data section: schemas and channels
   for (const s of schemas) emitRecord(OP_SCHEMA, encodeSchema(s));
@@ -435,6 +436,8 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
   let unwrapped: { symKey: Uint8Array; fileId: Uint8Array } | undefined;
   let chunkIdx = 0n;
   let wkaCount = 0;
+  let inputProfile = "";
+  let inputLibrary = "mcap-encrypt";
   const schemas: Schema[] = [];
   const channels: Channel[] = [];
   const messages: Message[] = [];
@@ -445,6 +448,14 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
     const { opcode, data } = rec;
 
     switch (opcode) {
+      case OP_HEADER: {
+        try {
+          const hdr = parseHeader(new Uint8Array(data));
+          inputProfile = hdr.profile;
+          inputLibrary = hdr.library;
+        } catch { /* ignore malformed header; fall back to defaults */ }
+        break;
+      }
       case OP_SCHEMA:
         schemas.push(parseSchema(new Uint8Array(data)));
         break;
@@ -480,7 +491,7 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
     throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
   }
 
-  return buildIndexedMcap(schemas, channels, messages);
+  return buildIndexedMcap(schemas, channels, messages, inputProfile, inputLibrary);
 }
 
 export async function* iterateMessages(

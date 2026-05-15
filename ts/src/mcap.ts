@@ -89,6 +89,11 @@ export function encodeMessage(m: Message): Uint8Array {
   return w.toUint8Array();
 }
 
+export function parseHeader(data: Uint8Array): { profile: string; library: string } {
+  const r = new BinaryReader(data);
+  return { profile: r.readString(), library: r.readString() };
+}
+
 export function encodeHeader(profile: string, library: string): Uint8Array {
   const w = new BinaryWriter();
   w.writeString(profile);

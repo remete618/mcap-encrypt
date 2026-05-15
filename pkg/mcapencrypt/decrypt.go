@@ -74,6 +74,7 @@ func streamDecrypt(r io.Reader, w io.Writer, priv *rsa.PrivateKey) error {
 		fileID    []byte
 		chunkIdx  uint64
 		wkaCount  int // number of wrapped-key attachments found
+		inputHdr  *mcap.Header
 		schemas   []*mcap.Schema
 		channels  []*mcap.Channel
 		writer    *mcap.Writer
@@ -95,7 +96,12 @@ func streamDecrypt(r io.Reader, w io.Writer, priv *rsa.PrivateKey) error {
 		if err != nil {
 			return fmt.Errorf("create writer: %w", err)
 		}
-		if err := writer.WriteHeader(&mcap.Header{Profile: ""}); err != nil {
+		outHdr := &mcap.Header{Profile: "", Library: "mcap-encrypt"}
+		if inputHdr != nil {
+			outHdr.Profile = inputHdr.Profile
+			outHdr.Library = inputHdr.Library
+		}
+		if err := writer.WriteHeader(outHdr); err != nil {
 			return err
 		}
 		for _, s := range schemas {
@@ -126,6 +132,11 @@ scan:
 		}
 
 		switch opcode {
+		case opcodeHeader:
+			if h, parseErr := mcap.ParseHeader(data); parseErr == nil {
+				inputHdr = h
+			}
+
 		case opcodeSchema:
 			s, parseErr := mcap.ParseSchema(data)
 			if parseErr != nil {
