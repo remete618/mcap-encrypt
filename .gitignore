@@ -1,3 +1,5 @@
 /mcap-encrypt
 *.mcap
 *.pem
+ts/dist/
+ts/node_modules/

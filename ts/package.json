@@ -1,18 +1,52 @@
 {
   "name": "mcap-encrypt",
   "version": "0.1.0",
-  "description": "Encrypt and decrypt MCAP files using XChaCha20-Poly1305 + RSA-OAEP",
+  "description": "Chunk-level encryption for MCAP robotics data files using XChaCha20-Poly1305 + RSA-OAEP-SHA-256",
   "type": "module",
-  "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepack": "cp ../README.md README.md",
+    "postpack": "rm -f README.md",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "mcap",
+    "encryption",
+    "robotics",
+    "ros2",
+    "xchacha20",
+    "aead"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/remete618/mcap-encrypt.git"
+  },
+  "homepage": "https://github.com/remete618/mcap-encrypt#readme",
   "dependencies": {
     "@noble/ciphers": "^2.0.0",
     "fzstd": "^0.1.1"
   },
   "devDependencies": {
+    "@types/node": "^25.8.0",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
