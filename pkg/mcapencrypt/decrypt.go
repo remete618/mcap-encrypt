@@ -174,6 +174,14 @@ scan:
 			if decErr != nil {
 				return fmt.Errorf("decode encrypted chunk: %w", decErr)
 			}
+			if len(ec.Nonce) != chacha20poly1305.NonceSizeX {
+				return fmt.Errorf("chunk [%d–%d]: nonce length %d invalid (want %d)",
+					ec.MessageStartTime, ec.MessageEndTime, len(ec.Nonce), chacha20poly1305.NonceSizeX)
+			}
+			if len(ec.EncryptedData) < 16 {
+				return fmt.Errorf("chunk [%d–%d]: ciphertext too short (%d bytes, minimum 16)",
+					ec.MessageStartTime, ec.MessageEndTime, len(ec.EncryptedData))
+			}
 			aead, cipherErr := chacha20poly1305.NewX(symKey)
 			if cipherErr != nil {
 				return fmt.Errorf("create cipher: %w", cipherErr)

@@ -300,6 +300,16 @@ async function decryptAndVerifyChunk(
   symKey: Uint8Array,
 ): Promise<Message[]> {
   const ec = decodeEncryptedChunk(data);
+  if (ec.nonce.length !== 24) {
+    throw new Error(
+      `chunk [${ec.messageStartTime}–${ec.messageEndTime}]: nonce length ${ec.nonce.length} invalid (want 24)`,
+    );
+  }
+  if (ec.encryptedData.length < 16) {
+    throw new Error(
+      `chunk [${ec.messageStartTime}–${ec.messageEndTime}]: ciphertext too short (${ec.encryptedData.length} bytes, minimum 16)`,
+    );
+  }
   const aad = chunkAAD(ec.messageStartTime, ec.messageEndTime);
   let plaintext: Uint8Array;
   try {
