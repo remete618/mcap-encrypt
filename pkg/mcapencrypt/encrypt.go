@@ -53,6 +53,7 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 	if _, err := rand.Read(symKey); err != nil {
 		return fmt.Errorf("generate symmetric key: %w", err)
 	}
+	defer clear(symKey)
 	fileID := make([]byte, fileIDSize)
 	if _, err := rand.Read(fileID); err != nil {
 		return fmt.Errorf("generate file ID: %w", err)
