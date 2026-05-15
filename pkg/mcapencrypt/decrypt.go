@@ -44,20 +44,31 @@ func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
 	}
 	defer inFile.Close()
 
-	outFile, err := os.Create(outputPath)
+	tmpFile, err := os.CreateTemp(filepath.Dir(outputPath), ".mcap-encrypt-tmp-*")
 	if err != nil {
-		return fmt.Errorf("create output: %w", err)
+		return fmt.Errorf("create temp output: %w", err)
 	}
+	tmpPath := tmpFile.Name()
+	var tmpClosed bool
 	defer func() {
-		if err := outFile.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("close output: %w", err)
+		if !tmpClosed {
+			if err := tmpFile.Close(); err != nil && retErr == nil {
+				retErr = fmt.Errorf("close temp output: %w", err)
+			}
 		}
 		if retErr != nil {
-			os.Remove(outputPath)
+			os.Remove(tmpPath)
 		}
 	}()
 
-	return streamDecrypt(inFile, outFile, priv)
+	if err := streamDecrypt(inFile, tmpFile, priv); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("flush temp output: %w", err)
+	}
+	tmpClosed = true
+	return os.Rename(tmpPath, outputPath)
 }
 
 // streamDecrypt performs a single-pass decrypt: schemas and channels are

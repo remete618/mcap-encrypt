@@ -283,35 +283,47 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 		}
 	}
 
-	// --- Write output. ---
-	outFile, err := os.Create(outputPath)
+	// --- Write output atomically: write to a temp file, rename on success. ---
+	tmpFile, err := os.CreateTemp(filepath.Dir(outputPath), ".mcap-encrypt-tmp-*")
 	if err != nil {
-		return fmt.Errorf("create output: %w", err)
+		return fmt.Errorf("create temp output: %w", err)
 	}
+	tmpPath := tmpFile.Name()
+	var tmpClosed bool
 	defer func() {
-		if err := outFile.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("close output: %w", err)
+		if !tmpClosed {
+			if err := tmpFile.Close(); err != nil && retErr == nil {
+				retErr = fmt.Errorf("close temp output: %w", err)
+			}
 		}
 		if retErr != nil {
-			os.Remove(outputPath)
+			os.Remove(tmpPath)
 		}
 	}()
 
-	if err := WriteMagic(outFile); err != nil {
+	if err := WriteMagic(tmpFile); err != nil {
 		return err
 	}
 	for _, op := range ops {
 		if op.chunkIdx >= 0 {
-			if err := WriteRecord(outFile, OpcodeEncryptedChunk, encChunks[op.chunkIdx].Encode()); err != nil {
+			if err := WriteRecord(tmpFile, OpcodeEncryptedChunk, encChunks[op.chunkIdx].Encode()); err != nil {
 				return err
 			}
 		} else {
-			if err := WriteRecord(outFile, op.opcode, op.data); err != nil {
+			if err := WriteRecord(tmpFile, op.opcode, op.data); err != nil {
 				return err
 			}
 		}
 	}
-	return WriteMagic(outFile)
+	if err := WriteMagic(tmpFile); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("flush temp output: %w", err)
+	}
+	tmpClosed = true
+	retErr = os.Rename(tmpPath, outputPath)
+	return retErr
 }
 
 // passthroughOpcode maps token types that are written verbatim to their opcodes.
