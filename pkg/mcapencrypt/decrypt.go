@@ -191,7 +191,7 @@ scan:
 			if openErr != nil {
 				return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, openErr)
 			}
-			msgs, parseErr := parseChunkRecords(plaintext, ec.Compression, ec.UncompressedCRC)
+			msgs, parseErr := parseChunkRecords(plaintext, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC)
 			if parseErr != nil {
 				return fmt.Errorf("parse decrypted chunk: %w", parseErr)
 			}
@@ -262,12 +262,15 @@ func parseAttachmentRecord(data []byte) (name, mediaType string, attData []byte,
 }
 
 // parseChunkRecords decompresses chunk data and extracts Message records.
-func parseChunkRecords(compressed []byte, compression string, expectedCRC uint32) ([]*mcap.Message, error) {
+func parseChunkRecords(compressed []byte, compression string, expectedSize uint64, expectedCRC uint32) ([]*mcap.Message, error) {
 	decompressed, err := decompressChunkData(compressed, compression)
 	if err != nil {
 		return nil, fmt.Errorf("decompress: %w", err)
 	}
 
+	if expectedSize != 0 && uint64(len(decompressed)) != expectedSize {
+		return nil, fmt.Errorf("uncompressed size mismatch: got %d, want %d", len(decompressed), expectedSize)
+	}
 	if expectedCRC != 0 {
 		if got := crc32.ChecksumIEEE(decompressed); got != expectedCRC {
 			return nil, fmt.Errorf("CRC mismatch: got %#08x, want %#08x", got, expectedCRC)

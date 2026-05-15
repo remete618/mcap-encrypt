@@ -320,6 +320,12 @@ async function decryptAndVerifyChunk(
     );
   }
   const decompressed = decompressChunkData(plaintext, ec.compression);
+  if (ec.uncompressedSize !== 0n && BigInt(decompressed.length) !== ec.uncompressedSize) {
+    throw new Error(
+      `uncompressed size mismatch in chunk [${ec.messageStartTime}–${ec.messageEndTime}]: ` +
+        `got ${decompressed.length}, want ${ec.uncompressedSize}`,
+    );
+  }
   if (ec.uncompressedCrc !== 0) {
     const got = crc32(decompressed);
     if (got !== ec.uncompressedCrc) {
