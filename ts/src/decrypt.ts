@@ -74,10 +74,10 @@ function parseInnerRecords(decompressed: Uint8Array): Message[] {
 }
 
 // buildIndexedMcap produces a fully-indexed, seekable MCAP file from the given
-// schemas, channels, and messages. All messages are placed in a single
-// uncompressed chunk followed by MessageIndex records, then a complete summary
-// section with ChunkIndex, Statistics, and SummaryOffset records.
-function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Message[], profile = "", library = "mcap-encrypt"): Uint8Array {
+// schemas, channels, messages, and plaintext attachments. All messages are placed
+// in a single uncompressed chunk followed by MessageIndex records, then a complete
+// summary section with ChunkIndex, Statistics, and SummaryOffset records.
+function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Message[], attachments: Uint8Array[] = [], profile = "", library = "mcap-encrypt"): Uint8Array {
   const parts: Uint8Array[] = [];
   let pos = 0n;
 
@@ -189,6 +189,11 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
     messageIndexTotalLength = pos - messageIndexStart;
   }
 
+  // Plaintext attachments in data section
+  for (const attRaw of attachments) {
+    emitRecord(OP_ATTACHMENT, attRaw);
+  }
+
   // DataEnd
   emitRecord(OP_DATA_END, w((b) => b.writeUint32(0)));
 
@@ -213,7 +218,7 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
       b.writeUint64(BigInt(messages.length)); // message_count
       b.writeUint16(schemas.length);          // schema_count
       b.writeUint32(channels.length);         // channel_count
-      b.writeUint32(0);                       // attachment_count
+      b.writeUint32(attachments.length);       // attachment_count
       b.writeUint32(0);                       // metadata_count
       b.writeUint32(hasMessages ? 1 : 0);    // chunk_count
       b.writeUint64(msgStart);               // message_start_time
@@ -441,6 +446,7 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
   const schemas: Schema[] = [];
   const channels: Channel[] = [];
   const messages: Message[] = [];
+  const plainAttachments: Uint8Array[] = [];
 
   scan: while (r.remaining > 0) {
     const rec = readRecord(r);
@@ -469,6 +475,8 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
           if (!unwrapped) {
             unwrapped = await tryUnwrapKey(att.data, privateKeyPem);
           }
+        } else {
+          plainAttachments.push(new Uint8Array(data));
         }
         break;
       }
@@ -491,7 +499,7 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
     throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
   }
 
-  return buildIndexedMcap(schemas, channels, messages, inputProfile, inputLibrary);
+  return buildIndexedMcap(schemas, channels, messages, plainAttachments, inputProfile, inputLibrary);
 }
 
 export async function* iterateMessages(

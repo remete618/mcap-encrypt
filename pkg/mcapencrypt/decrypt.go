@@ -70,14 +70,15 @@ func streamDecrypt(r io.Reader, w io.Writer, priv *rsa.PrivateKey) error {
 	}
 
 	var (
-		symKey    []byte
-		fileID    []byte
-		chunkIdx  uint64
-		wkaCount  int // number of wrapped-key attachments found
-		inputHdr  *mcap.Header
-		schemas   []*mcap.Schema
-		channels  []*mcap.Channel
-		writer    *mcap.Writer
+		symKey      []byte
+		fileID      []byte
+		chunkIdx    uint64
+		wkaCount    int // number of wrapped-key attachments found
+		inputHdr    *mcap.Header
+		schemas     []*mcap.Schema
+		channels    []*mcap.Channel
+		attachments []*mcap.Attachment // non-key plaintext attachments to pass through
+		writer      *mcap.Writer
 	)
 
 	// ensureWriter initialises the McapWriter on first EncryptedChunk, writing
@@ -157,6 +158,18 @@ scan:
 				return fmt.Errorf("parse attachment: %w", parseErr)
 			}
 			if name != AttachmentName || mediaType != AttachmentMediaType {
+				// Non-key attachment: buffer for plaintext passthrough.
+				logT, createT := parseAttachmentTimes(data)
+				dataCopy := make([]byte, len(attData))
+				copy(dataCopy, attData)
+				attachments = append(attachments, &mcap.Attachment{
+					LogTime:    logT,
+					CreateTime: createT,
+					Name:       name,
+					MediaType:  mediaType,
+					DataSize:   uint64(len(dataCopy)),
+					Data:       bytes.NewReader(dataCopy),
+				})
 				continue
 			}
 			wkaCount++
@@ -232,7 +245,21 @@ scan:
 	if err := ensureWriter(); err != nil {
 		return err
 	}
+	for _, att := range attachments {
+		if err := writer.WriteAttachment(att); err != nil {
+			return fmt.Errorf("write attachment %q: %w", att.Name, err)
+		}
+	}
 	return writer.Close()
+}
+
+// parseAttachmentTimes extracts log_time and create_time from raw Attachment bytes.
+func parseAttachmentTimes(data []byte) (logTime, createTime uint64) {
+	if len(data) < 16 {
+		return 0, 0
+	}
+	return binary.LittleEndian.Uint64(data[0:8]),
+		binary.LittleEndian.Uint64(data[8:16])
 }
 
 // parseAttachmentRecord extracts name, mediaType, and data from raw Attachment record bytes.

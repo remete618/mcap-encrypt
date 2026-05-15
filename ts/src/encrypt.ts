@@ -190,6 +190,20 @@ export async function encryptMcap(
         break;
       }
 
+      case OP_ATTACHMENT: {
+        // Pass non-key attachments through plaintext. Guard against wrapped-key
+        // attachments from previously encrypted files appearing as input.
+        const attReader = new BinaryReader(data);
+        attReader.readUint64(); // log_time
+        attReader.readUint64(); // create_time
+        const attName = attReader.readString();
+        if (attName !== ATTACHMENT_NAME) {
+          flushPending();
+          writeRecord(writer, OP_ATTACHMENT, data);
+        }
+        break;
+      }
+
       case OP_DATA_END:
         flushPending(); // flush in case there were no chunks
         writeRecord(writer, OP_DATA_END, data);
