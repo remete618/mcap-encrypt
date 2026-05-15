@@ -39,6 +39,11 @@ jobs:
         with:
           version: "latest"
 
+      - name: Vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   typescript:
     name: TypeScript
     runs-on: ubuntu-latest
