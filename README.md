@@ -2,10 +2,10 @@
 
 **Chunk-level encryption for [MCAP](https://mcap.dev) robotics data files.**
 
-![Go](https://img.shields.io/badge/go-1.21%2B-00ADD8?logo=go&logoColor=white)
-![npm](https://img.shields.io/badge/npm-mcap--encrypt-CB3837?logo=npm&logoColor=white)
+![CI](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml/badge.svg)
+![npm](https://img.shields.io/npm/v/mcap-encrypt?logo=npm&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
+![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)
 
 > 🔒 Encrypts every chunk in an MCAP file with XChaCha20-Poly1305. One symmetric key per file is wrapped with each recipient's RSA-2048 public key and stored as attachments; any matching private key decrypts. Schemas and channels stay plaintext so tooling can inspect file structure without a key. Available as a Go CLI, Go library, and TypeScript/Node.js library. Files encrypted by one implementation can be decrypted by the other.
 
