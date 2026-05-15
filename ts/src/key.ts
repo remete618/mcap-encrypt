@@ -10,8 +10,14 @@ export interface WrappedKeyData {
   wrappedKey: Uint8Array;
 }
 
+const WRAPPED_KEY_VERSION = 1;
+
 export function decodeWrappedKeyData(data: Uint8Array): WrappedKeyData {
-  const r = new BinaryReader(data);
+  if (data.length < 1) throw new Error("wrapped key data too short");
+  if (data[0] !== WRAPPED_KEY_VERSION) {
+    throw new Error(`unsupported wrapped key version ${data[0]}`);
+  }
+  const r = new BinaryReader(data.subarray(1));
   return {
     keyId: r.readString(),
     algorithm: r.readString(),
@@ -22,6 +28,7 @@ export function decodeWrappedKeyData(data: Uint8Array): WrappedKeyData {
 
 export function encodeWrappedKeyData(wkd: WrappedKeyData): Uint8Array {
   const w = new BinaryWriter();
+  w.writeUint8(WRAPPED_KEY_VERSION);
   w.writeString(wkd.keyId);
   w.writeString(wkd.algorithm);
   w.writeString(wkd.kekAlg);

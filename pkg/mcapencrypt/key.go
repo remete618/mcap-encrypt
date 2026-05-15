@@ -102,10 +102,11 @@ func GenerateKeyPair(basename string) error {
 	if err != nil {
 		return fmt.Errorf("generate RSA key: %w", err)
 	}
-	privPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(priv),
-	})
+	privDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return fmt.Errorf("marshal private key: %w", err)
+	}
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
 	if err := os.WriteFile(basename+".priv.pem", privPEM, 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
@@ -149,7 +150,15 @@ func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
 	if block == nil {
 		return nil, fmt.Errorf("no PEM block in %s", path)
 	}
-	return x509.ParsePKCS1PrivateKey(block.Bytes)
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("%s does not contain an RSA private key", path)
+	}
+	return rsaKey, nil
 }
 
 func WrapSymmetricKey(symKey []byte, pub *rsa.PublicKey) ([]byte, error) {
