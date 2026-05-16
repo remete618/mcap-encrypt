@@ -28,6 +28,7 @@
 - [Cross-language compatibility](#cross-language-compatibility)
 - [Encrypted file format](#encrypted-file-format)
 - [Known limitations](#known-limitations)
+- [Contributing](#contributing)
 - [License](#license)
 
 ---
@@ -377,12 +378,38 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 
 ---
 
+## Contributing
+
+Issues and PRs welcome at [github.com/remete618/mcap-encrypt](https://github.com/remete618/mcap-encrypt).
+
+**Best tasks to pick up:**
+
+| # | Task | Difficulty | Issue |
+|---|---|---|---|
+| 1 | LZ4 rejection test + multi-chunk regression test (TypeScript) | small | [#9](https://github.com/remete618/mcap-encrypt/issues/9) |
+| 2 | `mcap-encrypt inspect` command | medium | [#14](https://github.com/remete618/mcap-encrypt/issues/14) |
+| 3 | Browser smoke test (Vitest browser mode) | medium | [#17](https://github.com/remete618/mcap-encrypt/issues/17) |
+| 4 | Go benchmark script + README throughput table | medium | [#16](https://github.com/remete618/mcap-encrypt/issues/16) |
+| 5 | CONTRIBUTING.md + GitHub issue templates | small | [#19](https://github.com/remete618/mcap-encrypt/issues/19) |
+| 6 | Bound in-memory chunk buffering for large files (Go) | large | [#15](https://github.com/remete618/mcap-encrypt/issues/15) |
+
+Run tests locally before opening a PR:
+
+```bash
+# Go
+go test ./...
+
+# TypeScript
+cd ts && npm test
+
+# Interop (requires Go installed)
+cd ts && npm run test:interop
+```
+
+---
+
 ## License
 
 MIT License. Copyright (c) 2026 Radu Cioplea. See [LICENSE](LICENSE) for the full text.
 
 Contact: radu@cioplea.com · [github.com/remete618](https://github.com/remete618) · [www.eyepaq.com](https://www.eyepaq.com)
-
----
-
-> **Contributing:** Issues and PRs welcome at [github.com/remete618/mcap-encrypt](https://github.com/remete618/mcap-encrypt).
