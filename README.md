@@ -10,7 +10,7 @@ mcap-encrypt
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)
 
-Robotics logs contain camera frames, lidar scans, telemetry, and customer-site data. MCAP has great tooling but no native encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while preserving schemas and channels for inspection and routing — no key required to read file structure.
+Robotics logs contain camera frames, lidar scans, telemetry, and customer-site data. MCAP has great tooling but no native encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while preserving schemas and channels for inspection and routing. No key required to read file structure.
 
 Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption is the harder part.
 
@@ -70,7 +70,7 @@ flowchart LR
     B --> C[EncryptedChunk opcode 0x81]
     D --> E[RSA-OAEP per recipient]
     E --> F[WrappedKey attachments]
-    G[Schemas / Channels / Metadata / Attachments] --> H[Plaintext — inspectable without key]
+    G[Schemas / Channels / Metadata / Attachments] --> H[Plaintext, inspectable without key]
 ```
 
 ---
@@ -89,7 +89,7 @@ flowchart LR
 </thead>
 <tbody>
 <tr>
-<td><code>gpg</code> / <code>age</code> — full-file</td>
+<td><code>gpg</code> / <code>age</code> (full-file)</td>
 <td align="center">❌ no</td>
 <td align="center">❌ no</td>
 <td align="center">✅ yes <em>(age)</em></td>
@@ -103,7 +103,7 @@ flowchart LR
 <td align="center">❌ no</td>
 </tr>
 <tr>
-<td>ROS 1 bag — AES-CBC / GPG</td>
+<td>ROS 1 bag (AES-CBC / GPG)</td>
 <td align="center">❌ no</td>
 <td align="center">❌ no</td>
 <td align="center">❌ no</td>
@@ -121,7 +121,7 @@ flowchart LR
 
 ---
 
-## <img src="assets/logo-F-key-ribbon-transparent.svg" width="24" height="24" valign="middle" alt=""> Security model
+## 🔐 Security model
 
 | Layer | Algorithm | Purpose |
 |---|---|---|
