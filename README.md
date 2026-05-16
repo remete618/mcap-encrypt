@@ -44,19 +44,19 @@ MCAP is the standard container format for robotics sensor data (ROS 2, Foxglove,
 
 <table>
 <tr>
-<td align="center"><img src="assets/logo-E-golden-key-transparent.svg" width="32"><br><strong>1 · Key</strong></td>
+<td width="160" nowrap><img src="assets/logo-E-golden-key-transparent.svg" width="32" align="absmiddle"> <strong>1 · Key</strong></td>
 <td>A random 32-byte symmetric key is generated per file. A fresh 24-byte nonce is generated per chunk. Nonce reuse is not possible.</td>
 </tr>
 <tr>
-<td align="center"><img src="assets/logo-G-heart-lock-transparent.svg" width="32"><br><strong>2 · Encrypt</strong></td>
+<td width="160" nowrap><img src="assets/logo-G-heart-lock-transparent.svg" width="32" align="absmiddle"> <strong>2 · Encrypt</strong></td>
 <td>Every chunk is encrypted with <strong>XChaCha20-Poly1305</strong>. The AEAD tag detects any tampering with either the ciphertext or the plaintext metadata.</td>
 </tr>
 <tr>
-<td align="center"><img src="assets/logo-F-key-ribbon-transparent.svg" width="32"><br><strong>3 · Wrap</strong></td>
+<td width="160" nowrap><img src="assets/logo-F-key-ribbon-transparent.svg" width="32" align="absmiddle"> <strong>3 · Wrap</strong></td>
 <td>The file key is <strong>RSA-OAEP-SHA-256</strong> wrapped separately for each recipient and stored as attachments before the first chunk. Any matching private key decrypts.</td>
 </tr>
 <tr>
-<td align="center"><img src="assets/logo-H-pixel-owl-transparent.svg" width="32"><br><strong>4 · Inspect</strong></td>
+<td width="160" nowrap><img src="assets/logo-H-pixel-owl-transparent.svg" width="32" align="absmiddle"> <strong>4 · Inspect</strong></td>
 <td>Schemas and channels stay <strong>plaintext</strong>. Any MCAP tool can read topics, message types, and time ranges without a key.</td>
 </tr>
 </table>
@@ -90,31 +90,31 @@ flowchart LR
 <tbody>
 <tr>
 <td><code>gpg</code> / <code>age</code> — full-file</td>
-<td align="center">░ no</td>
-<td align="center">░ no</td>
-<td align="center">▓ yes <em>(age)</em></td>
-<td align="center">░ no</td>
+<td align="center">❌ no</td>
+<td align="center">❌ no</td>
+<td align="center">✅ yes <em>(age)</em></td>
+<td align="center">❌ no</td>
 </tr>
 <tr>
 <td>Storage-layer <em>(dm-crypt, S3 SSE)</em></td>
-<td align="center">▓ yes <em>(mounted)</em></td>
-<td align="center">░ no</td>
-<td align="center">░ no</td>
-<td align="center">░ no</td>
+<td align="center">✅ yes <em>(mounted)</em></td>
+<td align="center">❌ no</td>
+<td align="center">❌ no</td>
+<td align="center">❌ no</td>
 </tr>
 <tr>
 <td>ROS 1 bag — AES-CBC / GPG</td>
-<td align="center">░ no</td>
-<td align="center">░ no</td>
-<td align="center">░ no</td>
-<td align="center">░ no</td>
+<td align="center">❌ no</td>
+<td align="center">❌ no</td>
+<td align="center">❌ no</td>
+<td align="center">❌ no</td>
 </tr>
 <tr>
 <td><strong>► mcap-encrypt</strong></td>
-<td align="center"><strong>▓ partial</strong><br><small>schemas + channels</small></td>
-<td align="center"><strong>▓ yes</strong></td>
-<td align="center"><strong>▓ yes</strong></td>
-<td align="center"><strong>▓ yes</strong></td>
+<td align="center"><strong>✅ partial</strong><br><small>schemas + channels</small></td>
+<td align="center"><strong>✅ yes</strong></td>
+<td align="center"><strong>✅ yes</strong></td>
+<td align="center"><strong>✅ yes</strong></td>
 </tr>
 </tbody>
 </table>
