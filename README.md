@@ -5,10 +5,16 @@ mcap-encrypt
 
 **Public-key encryption for MCAP robotics logs.**
 
-![CI](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml/badge.svg)
-![npm](https://img.shields.io/npm/v/mcap-encrypt?logo=npm&logoColor=white)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)
+[![CI](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml/badge.svg)](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/remete618/mcap-encrypt?logo=github)](https://github.com/remete618/mcap-encrypt/releases/latest)
+[![npm](https://img.shields.io/npm/v/mcap-encrypt?logo=npm&logoColor=white)](https://www.npmjs.com/package/mcap-encrypt)
+[![npm downloads](https://img.shields.io/npm/dm/mcap-encrypt?logo=npm&logoColor=white&label=npm%20downloads)](https://www.npmjs.com/package/mcap-encrypt)
+[![Go](https://img.shields.io/badge/go-1.21%2B-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/remete618/mcap-encrypt)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/remete618/mcap-encrypt/badge)](https://scorecard.dev/viewer/?uri=github.com/remete618/mcap-encrypt)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fremete618%2Fmcap-encrypt.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fremete618%2Fmcap-encrypt)
+[![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://renovatebot.com)
 
 Robotics logs contain camera frames, lidar scans, telemetry, and customer-site data. MCAP has great tooling but no native encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while preserving schemas and channels for inspection and routing. No key required to read file structure.
 
