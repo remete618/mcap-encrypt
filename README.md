@@ -1,3 +1,5 @@
+<img src="assets/logo-E-golden-key-transparent.svg" width="100" align="right" alt="mcap-encrypt logo">
+
 # mcap-encrypt
 
 **Public-key encryption for MCAP robotics logs.**
@@ -60,12 +62,47 @@ flowchart LR
 
 ## Alternatives
 
-| Approach | Inspectable without key | Per-chunk streaming | Public-key recipients | MCAP-aware |
-|---|---|---|---|---|
-| `gpg` / `age` full-file encryption | No | No | Yes (`age`) | No |
-| Storage-layer encryption (dm-crypt, S3 SSE) | No | No | No | No |
-| ROS 1 bag AES-CBC / GPG | No | No | No | No |
-| **mcap-encrypt** | Yes (schemas and channels) | Yes | Yes | Yes |
+<table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>🔍&nbsp;Inspect&nbsp;without&nbsp;key</th>
+<th>⚡&nbsp;Per-chunk&nbsp;stream</th>
+<th>🔑&nbsp;Public-key</th>
+<th>📦&nbsp;MCAP-native</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gpg</code> / <code>age</code> &nbsp;full-file</td>
+<td>░░ no</td>
+<td>░░ no</td>
+<td>▓▓ yes <em>(age)</em></td>
+<td>░░ no</td>
+</tr>
+<tr>
+<td>Storage-layer &nbsp;<em>(dm-crypt, S3 SSE)</em></td>
+<td>░░ no</td>
+<td>░░ no</td>
+<td>░░ no</td>
+<td>░░ no</td>
+</tr>
+<tr>
+<td>ROS 1 bag &nbsp;AES-CBC / GPG</td>
+<td>░░ no</td>
+<td>░░ no</td>
+<td>░░ no</td>
+<td>░░ no</td>
+</tr>
+<tr>
+<td><strong>► mcap-encrypt</strong></td>
+<td><strong>▓▓ yes</strong> <em>(schemas + channels)</em></td>
+<td><strong>▓▓ yes</strong></td>
+<td><strong>▓▓ yes</strong></td>
+<td><strong>▓▓ yes</strong></td>
+</tr>
+</tbody>
+</table>
 
 ---
 
