@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "America/New_York",
+  "schedule": ["before 6am on Monday"],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Group all minor and patch non-major dep updates into one PR",
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchPackagePatterns": ["*"],
+      "excludePackagePatterns": [],
+      "groupName": "all non-major dependencies",
+      "automerge": false
+    },
+    {
+      "description": "Auto-merge patch-level devDependency updates",
+      "matchUpdateTypes": ["patch"],
+      "matchDepTypes": ["devDependencies"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash"
+    },
+    {
+      "description": "Group GitHub Actions updates together",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "automerge": false
+    },
+    {
+      "description": "Keep major updates as individual PRs for review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "breaking"]
+    }
+  ],
+  "gomod": {
+    "enabled": true
+  },
+  "npm": {
+    "enabled": true,
+    "rangeStrategy": "pin"
+  },
+  "github-actions": {
+    "enabled": true
+  }
+}
