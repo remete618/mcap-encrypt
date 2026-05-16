@@ -422,7 +422,3 @@ func buildAttachmentBytes(logTime, createTime uint64, name, mediaType string, da
 	return buf
 }
 
-// writeAttachmentRecord serializes and writes a full MCAP Attachment record.
-func writeAttachmentRecord(w io.Writer, logTime, createTime uint64, name, mediaType string, data []byte) error {
-	return WriteRecord(w, opcodeAttach, buildAttachmentBytes(logTime, createTime, name, mediaType, data))
-}

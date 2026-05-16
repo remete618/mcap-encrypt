@@ -66,7 +66,7 @@ func readAllMessages(t *testing.T, path string) []*mcap.Message {
 
 	var msgs []*mcap.Message
 	for {
-		_, _, msg, err := it.Next(nil)
+		_, _, msg, err := it.NextInto(nil)
 		if err != nil {
 			break
 		}
@@ -160,8 +160,9 @@ func TestEncryptedFileIsNotReadableAsStandardMCAP(t *testing.T) {
 		return // Acceptable.
 	}
 	var msgCount int
+	var buf mcap.Message
 	for {
-		_, _, msg, iterErr := it.Next(nil)
+		_, _, msg, iterErr := it.NextInto(&buf)
 		if iterErr != nil {
 			break
 		}
