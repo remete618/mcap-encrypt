@@ -421,4 +421,3 @@ func buildAttachmentBytes(logTime, createTime uint64, name, mediaType string, da
 	_ = o
 	return buf
 }
-
