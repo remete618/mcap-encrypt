@@ -81,15 +81,16 @@ func streamDecrypt(r io.Reader, w io.Writer, priv *rsa.PrivateKey) error {
 	}
 
 	var (
-		symKey      []byte
-		fileID      []byte
-		chunkIdx    uint64
-		wkaCount    int // number of wrapped-key attachments found
-		inputHdr    *mcap.Header
-		schemas     []*mcap.Schema
-		channels    []*mcap.Channel
-		attachments []*mcap.Attachment // non-key plaintext attachments to pass through
-		writer      *mcap.Writer
+		symKey       []byte
+		fileID       []byte
+		chunkIdx     uint64
+		wkaCount     int // number of wrapped-key attachments found
+		inputHdr     *mcap.Header
+		schemas      []*mcap.Schema
+		channels     []*mcap.Channel
+		attachments  []*mcap.Attachment // non-key plaintext attachments to pass through
+		metadataRecs []*mcap.Metadata   // metadata records to pass through
+		writer       *mcap.Writer
 	)
 
 	// ensureWriter initialises the McapWriter on first EncryptedChunk, writing
@@ -163,6 +164,13 @@ scan:
 			}
 			channels = append(channels, c)
 
+		case opcodeMetadata:
+			m, parseErr := mcap.ParseMetadata(data)
+			if parseErr != nil {
+				return fmt.Errorf("parse metadata: %w", parseErr)
+			}
+			metadataRecs = append(metadataRecs, m)
+
 		case opcodeAttach:
 			name, mediaType, attData, parseErr := parseAttachmentRecord(data)
 			if parseErr != nil {
@@ -234,14 +242,8 @@ scan:
 				return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, openErr)
 			}
 			chunkIdx++
-			msgs, parseErr := parseChunkRecords(plaintext, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC)
-			if parseErr != nil {
+			if parseErr := writeChunkMessages(plaintext, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC, writer); parseErr != nil {
 				return fmt.Errorf("parse decrypted chunk: %w", parseErr)
-			}
-			for _, msg := range msgs {
-				if writeErr := writer.WriteMessage(msg); writeErr != nil {
-					return fmt.Errorf("write message: %w", writeErr)
-				}
 			}
 
 		case opcodeFooter:
@@ -263,6 +265,11 @@ scan:
 	for _, att := range attachments {
 		if err := writer.WriteAttachment(att); err != nil {
 			return fmt.Errorf("write attachment %q: %w", att.Name, err)
+		}
+	}
+	for _, m := range metadataRecs {
+		if err := writer.WriteMetadata(m); err != nil {
+			return fmt.Errorf("write metadata %q: %w", m.Name, err)
 		}
 	}
 	return writer.Close()
@@ -318,47 +325,48 @@ func parseAttachmentRecord(data []byte) (name, mediaType string, attData []byte,
 	return
 }
 
-// parseChunkRecords decompresses chunk data and extracts Message records.
-func parseChunkRecords(compressed []byte, compression string, expectedSize uint64, expectedCRC uint32) ([]*mcap.Message, error) {
+// writeChunkMessages decompresses chunk data and writes each Message record
+// directly to w, avoiding an intermediate []*mcap.Message slice.
+// innerData slices point into the decompressed buffer; mcap.Writer copies them
+// into its chunk buffer on WriteMessage so there is no aliasing hazard.
+func writeChunkMessages(compressed []byte, compression string, expectedSize uint64, expectedCRC uint32, w *mcap.Writer) error {
 	decompressed, err := decompressChunkData(compressed, compression)
 	if err != nil {
-		return nil, fmt.Errorf("decompress: %w", err)
+		return fmt.Errorf("decompress: %w", err)
 	}
-
 	if expectedSize != 0 && uint64(len(decompressed)) != expectedSize {
-		return nil, fmt.Errorf("uncompressed size mismatch: got %d, want %d", len(decompressed), expectedSize)
+		return fmt.Errorf("uncompressed size mismatch: got %d, want %d", len(decompressed), expectedSize)
 	}
 	if expectedCRC != 0 {
 		if got := crc32.ChecksumIEEE(decompressed); got != expectedCRC {
-			return nil, fmt.Errorf("CRC mismatch: got %#08x, want %#08x", got, expectedCRC)
+			return fmt.Errorf("CRC mismatch: got %#08x, want %#08x", got, expectedCRC)
 		}
 	}
 
-	var msgs []*mcap.Message
-	r := bytes.NewReader(decompressed)
-	for r.Len() > 0 {
-		var hdr [9]byte
-		if _, err := io.ReadFull(r, hdr[:]); err != nil {
-			return nil, fmt.Errorf("read inner record header: %w", err)
+	o := 0
+	for o < len(decompressed) {
+		if o+9 > len(decompressed) {
+			return fmt.Errorf("truncated inner record header at offset %d", o)
 		}
-		innerOpcode := hdr[0]
-		length := binary.LittleEndian.Uint64(hdr[1:])
-
-		innerData := make([]byte, length)
-		if _, err := io.ReadFull(r, innerData); err != nil {
-			return nil, fmt.Errorf("read inner record data: %w", err)
+		innerOpcode := decompressed[o]
+		length := binary.LittleEndian.Uint64(decompressed[o+1 : o+9])
+		o += 9
+		end := o + int(length)
+		if end < o || end > len(decompressed) {
+			return fmt.Errorf("truncated inner record data at offset %d (need %d bytes)", o, length)
 		}
-
-		if innerOpcode != 0x05 {
-			continue
+		if innerOpcode == 0x05 {
+			msg, parseErr := mcap.ParseMessage(decompressed[o:end])
+			if parseErr != nil {
+				return fmt.Errorf("parse message: %w", parseErr)
+			}
+			if writeErr := w.WriteMessage(msg); writeErr != nil {
+				return fmt.Errorf("write message: %w", writeErr)
+			}
 		}
-		msg, parseErr := mcap.ParseMessage(innerData)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse message: %w", parseErr)
-		}
-		msgs = append(msgs, msg)
+		o = end
 	}
-	return msgs, nil
+	return nil
 }
 
 func decompressChunkData(data []byte, compression string) ([]byte, error) {

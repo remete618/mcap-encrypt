@@ -9,7 +9,7 @@ mcap-encrypt
 [![CI](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml/badge.svg)](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/remete618/mcap-encrypt?logo=github)](https://github.com/remete618/mcap-encrypt/releases/latest)
 [![npm](https://img.shields.io/npm/v/mcap-encrypt?logo=npm&logoColor=white)](https://www.npmjs.com/package/mcap-encrypt)
-[![Go](https://img.shields.io/badge/go-1.21%2B-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/remete618/mcap-encrypt)
+[![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/remete618/mcap-encrypt)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **Security**  
@@ -142,7 +142,7 @@ flowchart LR
 - Each file gets a fresh random 32-byte key and a fresh 24-byte nonce per chunk. Nonce reuse is not possible.
 - The AEAD tag (16 bytes, appended to each encrypted chunk) detects any tampering with the ciphertext or the AAD fields.
 - The AAD covers: `file_id` (16-byte random file identity), `chunk_index` (zero-based position), `key_id`, `compression`, `uncompressed_size`, `uncompressed_crc`, `message_start_time`, and `message_end_time`. Modifying any of these plaintext fields or the ciphertext fails authentication. Chunk swapping across files is caught by `file_id`; reordering within a file is caught by `chunk_index`.
-- The private key is never written to disk by this tool.
+- The private key is never stored in the encrypted MCAP file. `keygen` writes `<basename>.priv.pem` to disk with 0600 permissions; keep it private.
 
 **What it does not protect:**
 

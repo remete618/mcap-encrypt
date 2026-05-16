@@ -14,7 +14,7 @@ import (
 //	uint64 uncompressed_size   — plaintext, for post-decrypt verification
 //	uint32 uncompressed_crc    — plaintext, CRC32 of decompressed records
 //	string compression         — plaintext ("zstd", "lz4", or "")
-//	string key_id              — plaintext, identifies the wrapped key
+//	string key_id              — plaintext, content-key slot identifier; currently always "key-1"
 //	bytes  nonce               — 24 bytes (XChaCha20Poly1305 nonce)
 //	bytes  encrypted_data      — ciphertext of the original compressed records
 type EncryptedChunk struct {
