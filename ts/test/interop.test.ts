@@ -25,7 +25,7 @@ function findGo(): string | null {
     if (result.status === 0) return candidate;
   }
   // Try from PATH
-  const result = spawnSync("go", ["version"], { encoding: "utf8", shell: true });
+  const result = spawnSync("go", ["version"], { encoding: "utf8" });
   return result.status === 0 ? "go" : null;
 }
 

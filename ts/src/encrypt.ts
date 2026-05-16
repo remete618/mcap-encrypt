@@ -167,6 +167,12 @@ export async function encryptMcap(
       case OP_CHUNK: {
         flushPending();
         const chunk = parseStandardChunk(data);
+        if (chunk.compression === "lz4") {
+          throw new Error(
+            "LZ4-compressed source MCAP is not supported by the TypeScript library. " +
+            "Use the Go CLI (mcap-encrypt encrypt) to normalize LZ4 to zstd first.",
+          );
+        }
         const keyId = "key-1";
         const nonce = randomBytes(NONCE_SIZE);
         const aad = chunkAAD(

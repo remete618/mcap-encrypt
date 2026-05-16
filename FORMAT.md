@@ -59,7 +59,7 @@ Replaces a standard `Chunk`. Fields are little-endian.
 | `uncompressed_size` | `uint64 LE` | Byte length of the plaintext records after decompression (0 = unknown) |
 | `uncompressed_crc` | `uint32 LE` | CRC32-IEEE of the decompressed records (0 = not checked) |
 | `compression` | `string` | Compression applied to the records before encryption: `"zstd"` or `""` |
-| `key_id` | `string` | Identifier matching the `key_id` field in the `WrappedKeyData` attachment |
+| `key_id` | `string` | Content-key slot identifier included in the AAD. Currently always `"key-1"`. **Not** the same as the public-key fingerprint in `WrappedKeyData.key_id` — that field identifies the recipient; this field identifies which symmetric key slot was used. |
 | `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
 | `encrypted_data` | `bytes` | Ciphertext of the (optionally compressed) chunk records, including the 16-byte Poly1305 authentication tag (4-byte LE length prefix + N bytes) |
 

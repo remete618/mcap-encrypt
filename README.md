@@ -1,19 +1,24 @@
 # mcap-encrypt
 
-**Chunk-level encryption for [MCAP](https://mcap.dev) robotics data files.**
+**Public-key encryption for MCAP robotics logs.**
 
 ![CI](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml/badge.svg)
 ![npm](https://img.shields.io/npm/v/mcap-encrypt?logo=npm&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)
 
-> 🔒 Encrypts every chunk in an MCAP file with XChaCha20-Poly1305. One symmetric key per file is wrapped with each recipient's RSA-2048 public key and stored as attachments; any matching private key decrypts. Schemas and channels stay plaintext so tooling can inspect file structure without a key. Available as a Go CLI, Go library, and TypeScript/Node.js library. Files encrypted by one implementation can be decrypted by the other.
+> Robotics logs contain camera frames, lidar scans, telemetry, and customer-site data. MCAP has great tooling but no native encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while preserving schemas and channels for inspection and routing — no key required to read file structure.
+
+> **Status:** v0.x, experimental, not externally audited.
+> **Best for:** encrypting MCAP robotics logs at rest while preserving schemas and channels for inspection.
+> **Not for:** hiding topic names, timestamps, attachment content, or metadata records.
 
 ---
 
 ## Table of contents
 
 - [What it does](#what-it-does)
+- [Alternatives](#alternatives)
 - [Security model](#security-model)
 - [Install](#install)
 - [Quick start](#quick-start)
@@ -39,6 +44,27 @@ MCAP is the standard container format for robotics sensor data (ROS 2, Foxglove,
 4. Schemas and channel metadata remain in plaintext so tools can inspect topics and message types without decrypting.
 
 Decryption is single-pass: all wrapped-key attachments appear before the first encrypted chunk so a decoder can start streaming immediately after finding one that matches.
+
+```mermaid
+flowchart LR
+    A[MCAP Chunk] --> B[XChaCha20-Poly1305]
+    D[Random 32-byte file key] --> B
+    B --> C[EncryptedChunk opcode 0x81]
+    D --> E[RSA-OAEP per recipient]
+    E --> F[WrappedKey attachments]
+    G[Schemas / Channels / Metadata] --> H[Plaintext — inspectable without key]
+```
+
+---
+
+## Alternatives
+
+| Approach | Inspectable without key | Per-chunk streaming | Public-key recipients | MCAP-aware |
+|---|---|---|---|---|
+| `gpg` / `age` full-file encryption | No | No | Yes (`age`) | No |
+| Storage-layer encryption (dm-crypt, S3 SSE) | No | No | No | No |
+| ROS 1 bag AES-CBC / GPG | No | No | No | No |
+| **mcap-encrypt** | Yes (schemas and channels) | Yes | Yes | Yes |
 
 ---
 
@@ -73,6 +99,7 @@ Decryption is single-pass: all wrapped-key attachments appear before the first e
 | Approximate per-chunk compressed size | EncryptedChunk record length |
 | Compression algorithm per chunk | EncryptedChunk `compression` field |
 | Attachment names and media types (non-key attachments) | Attachment records |
+| Metadata record keys and values | `Metadata` records |
 | Number of recipients and their key fingerprints | WrappedKey Attachment `key_id` field |
 
 If any of the above is sensitive, do not use this tool without additional measures (e.g. strip topic names before encrypting, or use a single-recipient deployment where key fingerprints are not a concern).
@@ -270,7 +297,7 @@ Both implementations agree on:
 
 Cross-language compatibility is verified by automated interop tests in CI.
 
-**Compression note:** Source MCAP files that use LZ4 chunk compression are automatically re-compressed to zstd during encryption. The Go library supports both LZ4 and zstd as decompression targets; the TypeScript library supports zstd only. Re-compression happens transparently and does not change decompressed content.
+**Compression note:** The Go library automatically re-compresses LZ4 chunks to zstd during encryption, so any source MCAP is safe to pass to `mcap-encrypt encrypt`. The TypeScript library does **not** support LZ4 input; `encryptMcap()` throws a clear error if the source contains LZ4 chunks. Use the Go CLI to normalize those files first.
 
 ---
 
@@ -334,6 +361,7 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 |---|---|---|
 | **No key rotation** | To change the key, you must re-encrypt the entire file. | Re-run `encrypt` with the new public key after decrypting with the old one. |
 | **Attachments are not encrypted** | Attachment content passes through in plaintext. | Encrypt sensitive attachments before writing to the MCAP. |
+| **Metadata records are not encrypted** | Arbitrary key-value metadata passes through in plaintext. | Strip or sanitize Metadata records before encrypting if they contain sensitive values. |
 | **Input must be chunked** | Non-chunked MCAP files are rejected. | Re-encode with chunking enabled (the Foxglove CLI and most MCAP writers produce chunked output by default). |
 
 ### TypeScript-specific limitations
@@ -341,7 +369,7 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 | Limitation | Impact | Notes |
 |---|---|---|
 | **In-memory only** | The TypeScript API holds the entire file in a `Uint8Array`. | Use the Go CLI for files larger than available RAM. |
-| **No LZ4 decompression** | Cannot decompress LZ4-compressed chunks directly. | Non-issue in practice: `encryptMcap()` normalizes LZ4 to zstd at encryption time. Only relevant if you hand-craft an encrypted file with LZ4 chunks. |
+| **No LZ4 support** | `encryptMcap()` throws if any source chunk uses LZ4 compression. Cannot decompress LZ4-encrypted chunks. | Use the Go CLI to encrypt LZ4 source files; it normalizes to zstd automatically. |
 
 ### Not yet implemented
 
