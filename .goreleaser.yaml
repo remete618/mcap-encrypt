@@ -44,6 +44,21 @@ release:
   header: |
     See [CHANGELOG.md](https://github.com/remete618/mcap-encrypt/blob/main/CHANGELOG.md) for details.
 
+brews:
+  - name: mcap-encrypt
+    repository:
+      owner: remete618
+      name: homebrew-mcap-encrypt
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/remete618/mcap-encrypt"
+    description: "Chunk-level encryption for MCAP robotics data files"
+    license: "MIT"
+    test: |
+      assert_match "mcap-encrypt #{version}", shell_output("#{bin}/mcap-encrypt version")
+    install: |
+      bin.install "mcap-encrypt"
+
 changelog:
   use: github
   sort: asc
