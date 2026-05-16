@@ -1,6 +1,7 @@
-<img src="assets/logo-E-golden-key-transparent.svg" width="100" align="right" alt="mcap-encrypt logo">
-
-# mcap-encrypt
+<h1>
+<img src="assets/logo-E-golden-key-transparent.svg" width="40" height="40" valign="middle" alt="">
+mcap-encrypt
+</h1>
 
 **Public-key encryption for MCAP robotics logs.**
 
@@ -9,13 +10,15 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)
 
-> Robotics logs contain camera frames, lidar scans, telemetry, and customer-site data. MCAP has great tooling but no native encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while preserving schemas and channels for inspection and routing — no key required to read file structure.
->
-> Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption is the harder part.
+Robotics logs contain camera frames, lidar scans, telemetry, and customer-site data. MCAP has great tooling but no native encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while preserving schemas and channels for inspection and routing — no key required to read file structure.
 
-> *Status:* v0.x, experimental, not externally audited.
-> *Best for:* encrypting MCAP robotics logs at rest while preserving schemas and channels for inspection.
-> *Not for:* hiding topic names, timestamps, attachment content, or metadata records.
+Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption is the harder part.
+
+<table><tr>
+<td>📌 <em>Status:</em> v0.x · experimental · not externally audited</td>
+<td>✅ <em>Best for:</em> MCAP logs at rest, schemas + channels stay readable</td>
+<td>🚫 <em>Not for:</em> hiding topic names, timestamps, or attachments</td>
+</tr></table>
 
 ---
 
@@ -41,12 +44,24 @@
 
 MCAP is the standard container format for robotics sensor data (ROS 2, Foxglove, etc.). Files can contain gigabytes of camera frames, lidar scans, and telemetry. `mcap-encrypt` adds at-rest encryption to those files without changing the outer structure.
 
-**How it works:**
-
-1. A random 32-byte symmetric key is generated per file.
-2. Every chunk in the MCAP is encrypted with XChaCha20-Poly1305 (authenticated encryption).
-3. The symmetric key is RSA-OAEP-SHA-256 wrapped with each recipient's public key. Each wrapped copy is stored as a separate attachment before the first encrypted chunk.
-4. Schemas and channel metadata remain in plaintext so tools can inspect topics and message types without decrypting.
+<table>
+<tr>
+<td align="center"><img src="assets/logo-E-golden-key-transparent.svg" width="32"><br><strong>1 · Key</strong></td>
+<td>A random 32-byte symmetric key is generated per file. A fresh 24-byte nonce is generated per chunk. Nonce reuse is not possible.</td>
+</tr>
+<tr>
+<td align="center"><img src="assets/logo-G-heart-lock-transparent.svg" width="32"><br><strong>2 · Encrypt</strong></td>
+<td>Every chunk is encrypted with <strong>XChaCha20-Poly1305</strong>. The AEAD tag detects any tampering with either the ciphertext or the plaintext metadata.</td>
+</tr>
+<tr>
+<td align="center"><img src="assets/logo-F-key-ribbon-transparent.svg" width="32"><br><strong>3 · Wrap</strong></td>
+<td>The file key is <strong>RSA-OAEP-SHA-256</strong> wrapped separately for each recipient and stored as attachments before the first chunk. Any matching private key decrypts.</td>
+</tr>
+<tr>
+<td align="center"><img src="assets/logo-H-pixel-owl-transparent.svg" width="32"><br><strong>4 · Inspect</strong></td>
+<td>Schemas and channels stay <strong>plaintext</strong>. Any MCAP tool can read topics, message types, and time ranges without a key.</td>
+</tr>
+</table>
 
 Decryption is single-pass: all wrapped-key attachments appear before the first encrypted chunk so a decoder can start streaming immediately after finding one that matches.
 
@@ -67,48 +82,48 @@ flowchart LR
 <table>
 <thead>
 <tr>
-<th>Approach</th>
-<th>🔍&nbsp;Inspectable&nbsp;as&nbsp;MCAP&nbsp;after&nbsp;encryption</th>
-<th>⚡&nbsp;Per-chunk&nbsp;stream</th>
-<th>🔑&nbsp;Public-key</th>
-<th>📦&nbsp;MCAP-native</th>
+<th align="left">Approach</th>
+<th align="center">🔍 MCAP-inspectable<br>after encrypt</th>
+<th align="center">⚡ Per-chunk<br>stream</th>
+<th align="center">🔑 Public-key<br>recipients</th>
+<th align="center">📦 MCAP-<br>native</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>gpg</code> / <code>age</code> &nbsp;full-file</td>
-<td>░░ no</td>
-<td>░░ no</td>
-<td>▓▓ yes <em>(age)</em></td>
-<td>░░ no</td>
+<td><code>gpg</code> / <code>age</code> — full-file</td>
+<td align="center">░ no</td>
+<td align="center">░ no</td>
+<td align="center">▓ yes <em>(age)</em></td>
+<td align="center">░ no</td>
 </tr>
 <tr>
-<td>Storage-layer &nbsp;<em>(dm-crypt, S3 SSE)</em></td>
-<td>▓▓ yes <em>(when mounted)</em></td>
-<td>░░ no</td>
-<td>░░ no</td>
-<td>░░ no</td>
+<td>Storage-layer <em>(dm-crypt, S3 SSE)</em></td>
+<td align="center">▓ yes <em>(mounted)</em></td>
+<td align="center">░ no</td>
+<td align="center">░ no</td>
+<td align="center">░ no</td>
 </tr>
 <tr>
-<td>ROS 1 bag &nbsp;AES-CBC / GPG</td>
-<td>░░ no</td>
-<td>░░ no</td>
-<td>░░ no</td>
-<td>░░ no</td>
+<td>ROS 1 bag — AES-CBC / GPG</td>
+<td align="center">░ no</td>
+<td align="center">░ no</td>
+<td align="center">░ no</td>
+<td align="center">░ no</td>
 </tr>
 <tr>
 <td><strong>► mcap-encrypt</strong></td>
-<td><strong>▓▓ partial</strong> <em>(schemas + channels; not attachments)</em></td>
-<td><strong>▓▓ yes</strong></td>
-<td><strong>▓▓ yes</strong></td>
-<td><strong>▓▓ yes</strong></td>
+<td align="center"><strong>▓ partial</strong><br><small>schemas + channels</small></td>
+<td align="center"><strong>▓ yes</strong></td>
+<td align="center"><strong>▓ yes</strong></td>
+<td align="center"><strong>▓ yes</strong></td>
 </tr>
 </tbody>
 </table>
 
 ---
 
-## Security model
+## <img src="assets/logo-F-key-ribbon-transparent.svg" width="24" height="24" valign="middle" alt=""> Security model
 
 | Layer | Algorithm | Purpose |
 |---|---|---|
