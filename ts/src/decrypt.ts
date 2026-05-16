@@ -414,11 +414,11 @@ async function* streamMessages(
           throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
         }
         for (const msg of await decryptAndVerifyChunk(new Uint8Array(data), unwrapped.symKey, unwrapped.fileId, chunkIdx)) {
-          chunkIdx++;
           const channel = channelMap.get(msg.channelId);
           const schema = channel ? schemaMap.get(channel.schemaId) : undefined;
           if (channel && schema) yield { schema, channel, message: msg };
         }
+        chunkIdx++;
         break;
       }
       case OP_FOOTER:
