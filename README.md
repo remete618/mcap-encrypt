@@ -29,8 +29,6 @@
 
 ## What it does
 
-> **TLDR:** Takes a standard MCAP file, encrypts every chunk, and produces a new MCAP file that standard tools cannot read without the private key.
-
 MCAP is the standard container format for robotics sensor data (ROS 2, Foxglove, etc.). Files can contain gigabytes of camera frames, lidar scans, and telemetry. `mcap-encrypt` adds at-rest encryption to those files without changing the outer structure.
 
 **How it works:**
@@ -46,19 +44,17 @@ Decryption is single-pass: all wrapped-key attachments appear before the first e
 
 ## Security model
 
-> **TLDR:** Correct AEAD encryption, random nonces, authenticated with time-bound AAD to prevent chunk swapping. Key wrapping is RSA-2048-OAEP-SHA-256.
-
 | Layer | Algorithm | Purpose |
 |---|---|---|
 | Message encryption | XChaCha20-Poly1305 | Per-chunk authenticated encryption |
 | Key wrapping | RSA-2048-OAEP-SHA-256 | Protects the symmetric key at rest |
-| Integrity binding | AEAD additional data (AAD) | Chunk time bounds bound to ciphertext; detects modification of AAD fields |
+| Integrity binding | AEAD additional data (AAD) | Binds ciphertext to file identity, chunk position, and plaintext metadata; detects any modification |
 
 **Properties:**
 
 - Each file gets a fresh random 32-byte key and a fresh 24-byte nonce per chunk. Nonce reuse is not possible.
-- The AEAD tag (16 bytes, appended to each encrypted chunk) detects any tampering with ciphertext or the AAD fields.
-- Chunk time bounds (`message_start_time`, `message_end_time`) are used as AAD. Modifying these fields or the ciphertext breaks authentication. Note: two chunks with identical timestamps from the same file are not distinguishable by AAD alone; chunk-index binding is planned for a future format version.
+- The AEAD tag (16 bytes, appended to each encrypted chunk) detects any tampering with the ciphertext or the AAD fields.
+- The AAD covers: `file_id` (16-byte random file identity), `chunk_index` (zero-based position), `key_id`, `compression`, `uncompressed_size`, `uncompressed_crc`, `message_start_time`, and `message_end_time`. Modifying any of these plaintext fields or the ciphertext fails authentication. Chunk swapping across files is caught by `file_id`; reordering within a file is caught by `chunk_index`.
 - The private key is never written to disk by this tool.
 
 **What it does not protect:**
@@ -72,20 +68,18 @@ Decryption is single-pass: all wrapped-key attachments appear before the first e
 | Leaked field | Where |
 |---|---|
 | Number of topics and their names | Channel records |
-| Message schema names and encodings (e.g. , ) | Schema records |
-| Number of chunks and the time range of each | EncryptedChunk  /  |
+| Message schema names and encodings (e.g. `json`, `ros2msg`) | Schema records |
+| Number of chunks and the time range of each | EncryptedChunk `message_start_time` / `message_end_time` |
 | Approximate per-chunk compressed size | EncryptedChunk record length |
-| Compression algorithm per chunk | EncryptedChunk  field |
+| Compression algorithm per chunk | EncryptedChunk `compression` field |
 | Attachment names and media types (non-key attachments) | Attachment records |
-| Number of recipients and their key fingerprints | WrappedKey Attachment  field |
+| Number of recipients and their key fingerprints | WrappedKey Attachment `key_id` field |
 
 If any of the above is sensitive, do not use this tool without additional measures (e.g. strip topic names before encrypting, or use a single-recipient deployment where key fingerprints are not a concern).
 
 ---
 
 ## Install
-
-> **TLDR:** `go install` for the CLI, `go get` for the Go library, `npm install` for TypeScript.
 
 ### Go CLI
 
@@ -121,8 +115,6 @@ Requires Node.js 18+ (uses the built-in Web Crypto API). Works in modern browser
 
 ## Quick start
 
-> **TLDR:** Three commands: `keygen`, `encrypt`, `decrypt`.
-
 ```bash
 # 1. Generate a key pair
 mcap-encrypt keygen --out mykey
@@ -140,8 +132,6 @@ If the output file already exists, both commands fail with an error. Pass `--for
 ---
 
 ## CLI reference
-
-> **TLDR:** Three subcommands. Multi-recipient via repeatable `--key`. Progress spinner with throughput. Safe-by-default (no silent overwrites, magic-byte check on input).
 
 ```
 mcap-encrypt keygen  --out <basename>
@@ -186,8 +176,6 @@ Decrypts an encrypted MCAP file. Produces a standard, fully-indexed MCAP readabl
 
 ## Go library
 
-> **TLDR:** Four functions: `GenerateKeyPair`, `Encrypt`, `EncryptMulti`, `Decrypt`. All take file paths. Thread-safe; chunks encrypted in parallel.
-
 ```go
 import "github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
 
@@ -207,7 +195,7 @@ if err := mcapencrypt.EncryptMulti("input.mcap", "encrypted.mcap", []string{
 if err := mcapencrypt.Decrypt("encrypted.mcap", "output.mcap", "mykey.priv.pem"); err != nil { ... }
 ```
 
-**Input/output:**
+**Notes:**
 
 - `Encrypt` is a convenience wrapper for `EncryptMulti` with a single key.
 - `EncryptMulti` wraps the same symmetric key for each public key in the list. The file can be decrypted with any of the corresponding private keys.
@@ -218,8 +206,6 @@ if err := mcapencrypt.Decrypt("encrypted.mcap", "output.mcap", "mykey.priv.pem")
 ---
 
 ## TypeScript library
-
-> **TLDR:** In-memory API: pass `Uint8Array` in, get `Uint8Array` out. `iterateMessages` streams without materializing a full output file.
 
 ```typescript
 import { generateKeyPair, encryptMcap, decryptMcap, iterateMessages } from "mcap-encrypt";
@@ -262,8 +248,6 @@ for await (const { schema, channel, message } of iterateMessages(enc, privateKey
 
 ## Cross-language compatibility
 
-> **TLDR:** Go and TypeScript use the same wire format. A file encrypted by the CLI can be decrypted by the TypeScript library, and vice versa. Verified by automated interop tests.
-
 Keys and encrypted files produced by the Go CLI are fully compatible with the TypeScript library:
 
 ```bash
@@ -278,11 +262,13 @@ mcap-encrypt decrypt --key mykey.priv.pem ts-enc.mcap output.mcap
 
 Both implementations agree on:
 - XChaCha20-Poly1305 nonce size (24 bytes), key size (32 bytes)
-- AEAD AAD encoding (16-byte little-endian `start_time || end_time`)
+- AEAD AAD v2 encoding: `file_id` (16 bytes) + `chunk_index` (uint64 LE) + `key_id` + `compression` + `uncompressed_size` (uint64 LE) + `uncompressed_crc` (uint32 LE) + `message_start_time` (uint64 LE) + `message_end_time` (uint64 LE)
 - RSA-OAEP-SHA-256 key wrapping
 - `EncryptedChunk` wire format (opcode `0x81`)
-- Wrapped key attachment format (version byte + length-prefixed fields)
+- Wrapped key attachment format (version `0x02`, 16-byte `file_id`, length-prefixed fields)
 - PKCS#8 private key format (PEM label `PRIVATE KEY`)
+
+Cross-language compatibility is verified by automated interop tests in CI.
 
 **Compression note:** Source MCAP files that use LZ4 chunk compression are automatically re-compressed to zstd during encryption. The Go library supports both LZ4 and zstd as decompression targets; the TypeScript library supports zstd only. Re-compression happens transparently and does not change decompressed content.
 
@@ -290,13 +276,11 @@ Both implementations agree on:
 
 ## Encrypted file format
 
-> **TLDR:** Valid MCAP file with one custom record type (opcode `0x81`). Standard tools can open it but get no messages.
+The outer file is a valid MCAP. Standard MCAP readers can open it and inspect schemas and channels. They will not find any messages because the `EncryptedChunk` opcode (`0x81`) is not a standard MCAP record type.
 
 ```
 [magic] [Header] [Schema]* [Channel]* [WrappedKeyAttachment]+ [EncryptedChunk]* [DataEnd] [Footer] [magic]
 ```
-
-The outer file is a valid MCAP. Standard MCAP readers can open it and inspect schemas and channels. They will not find any messages because the `EncryptedChunk` opcode (`0x81`) is not a standard MCAP record type.
 
 There is one `WrappedKeyAttachment` per recipient. All wrapped copies encode the same symmetric key, wrapped separately for each public key.
 
@@ -308,32 +292,41 @@ A standard MCAP Attachment record (opcode `0x09`) with:
 |---|---|
 | `name` | `mcap_encryption_key` |
 | `media_type` | `application/x-mcap-wrapped-key` |
-| `data` | Version byte (`0x01`) + length-prefixed fields |
+| `data` | Binary payload described below |
 
-The `data` payload encodes (in order): `key_id`, `algorithm` (`xchacha20poly1305`), `kek_alg` (`rsa-oaep-sha256`), `wrapped_key` (256 bytes for RSA-2048).
+The `data` payload (all strings and byte fields use 4-byte LE length prefixes):
+
+| Field | Description |
+|---|---|
+| version | `0x02` (uint8) |
+| file_id | 16 random bytes; same across all recipients of the same file |
+| key_id | Hex-encoded SHA-256 of the recipient's SPKI public key DER encoding |
+| algorithm | `xchacha20poly1305` |
+| kek_algorithm | `rsa-oaep-sha256` |
+| wrapped_key | RSA-OAEP-SHA-256 ciphertext of the 32-byte symmetric key (256 bytes for RSA-2048) |
 
 ### EncryptedChunk (opcode `0x81`)
 
 | Field | Type | Description |
 |---|---|---|
-| `message_start_time` | `uint64 LE` | Plaintext; used as AAD |
-| `message_end_time` | `uint64 LE` | Plaintext; used as AAD |
-| `uncompressed_size` | `uint64 LE` | Size of decompressed records |
-| `uncompressed_crc` | `uint32 LE` | CRC32-IEEE of decompressed records (0 = not set) |
-| `compression` | `string` | Compression format of the original records (`zstd` or `""`) |
-| `key_id` | `string` | Key identifier matching the attachment |
-| `nonce` | `bytes (4B len + 24B)` | XChaCha20 nonce |
-| `encrypted_data` | `bytes (4B len + N)` | Ciphertext of compressed records + 16-byte Poly1305 tag |
+| `message_start_time` | `uint64 LE` | Plaintext; earliest log time in this chunk |
+| `message_end_time` | `uint64 LE` | Plaintext; latest log time in this chunk |
+| `uncompressed_size` | `uint64 LE` | Byte length of the records after decompression |
+| `uncompressed_crc` | `uint32 LE` | CRC32-IEEE of the decompressed records (0 = not checked) |
+| `compression` | `string` | Compression applied before encryption: `"zstd"` or `""` |
+| `key_id` | `string` | Matches the `key_id` in the WrappedKeyData attachment |
+| `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
+| `encrypted_data` | `bytes` | Ciphertext including the 16-byte Poly1305 tag (4-byte LE length prefix + N bytes) |
 
 All `WrappedKeyAttachment` records appear before the first `EncryptedChunk`. Decoders can begin streaming decryption in a single pass without buffering chunks.
+
+See [FORMAT.md](FORMAT.md) for the complete binary specification including AAD serialization and version history.
 
 ---
 
 ## Known limitations
 
-> **TLDR:** No key rotation, no attachment encryption, TypeScript is in-memory only. These are current constraints. The implementation uses standard AEAD primitives (XChaCha20-Poly1305) and has adversarial tests; it has not been externally audited.
-
-The following are current constraints, not bugs. The cryptographic core is correct and passes adversarial tests.
+The following are current constraints, not bugs. The cryptographic core uses standard AEAD primitives (XChaCha20-Poly1305) and is covered by adversarial and fuzz tests. It has not been externally audited.
 
 ### Functional limitations
 
