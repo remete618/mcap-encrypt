@@ -18,6 +18,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "test": "vitest run",
+    "test:interop": "vitest run test/interop.test.ts",
     "typecheck": "tsc --noEmit",
     "prepack": "cp ../README.md README.md",
     "postpack": "rm -f README.md",

@@ -10,10 +10,12 @@
 ![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)
 
 > Robotics logs contain camera frames, lidar scans, telemetry, and customer-site data. MCAP has great tooling but no native encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while preserving schemas and channels for inspection and routing — no key required to read file structure.
+>
+> Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption is the harder part.
 
-> **Status:** v0.x, experimental, not externally audited.
-> **Best for:** encrypting MCAP robotics logs at rest while preserving schemas and channels for inspection.
-> **Not for:** hiding topic names, timestamps, attachment content, or metadata records.
+> *Status:* v0.x, experimental, not externally audited.
+> *Best for:* encrypting MCAP robotics logs at rest while preserving schemas and channels for inspection.
+> *Not for:* hiding topic names, timestamps, attachment content, or metadata records.
 
 ---
 
@@ -22,8 +24,8 @@
 - [What it does](#what-it-does)
 - [Alternatives](#alternatives)
 - [Security model](#security-model)
-- [Install](#install)
 - [Quick start](#quick-start)
+- [Install](#install)
 - [CLI reference](#cli-reference)
 - [Go library](#go-library)
 - [TypeScript library](#typescript-library)
@@ -55,7 +57,7 @@ flowchart LR
     B --> C[EncryptedChunk opcode 0x81]
     D --> E[RSA-OAEP per recipient]
     E --> F[WrappedKey attachments]
-    G[Schemas / Channels / Metadata] --> H[Plaintext — inspectable without key]
+    G[Schemas / Channels / Metadata / Attachments] --> H[Plaintext — inspectable without key]
 ```
 
 ---
@@ -66,7 +68,7 @@ flowchart LR
 <thead>
 <tr>
 <th>Approach</th>
-<th>🔍&nbsp;Inspect&nbsp;without&nbsp;key</th>
+<th>🔍&nbsp;Inspectable&nbsp;as&nbsp;MCAP&nbsp;after&nbsp;encryption</th>
 <th>⚡&nbsp;Per-chunk&nbsp;stream</th>
 <th>🔑&nbsp;Public-key</th>
 <th>📦&nbsp;MCAP-native</th>
@@ -82,7 +84,7 @@ flowchart LR
 </tr>
 <tr>
 <td>Storage-layer &nbsp;<em>(dm-crypt, S3 SSE)</em></td>
-<td>░░ no</td>
+<td>▓▓ yes <em>(when mounted)</em></td>
 <td>░░ no</td>
 <td>░░ no</td>
 <td>░░ no</td>
@@ -96,7 +98,7 @@ flowchart LR
 </tr>
 <tr>
 <td><strong>► mcap-encrypt</strong></td>
-<td><strong>▓▓ yes</strong> <em>(schemas + channels)</em></td>
+<td><strong>▓▓ partial</strong> <em>(schemas + channels; not attachments)</em></td>
 <td><strong>▓▓ yes</strong></td>
 <td><strong>▓▓ yes</strong></td>
 <td><strong>▓▓ yes</strong></td>
@@ -144,6 +146,24 @@ If any of the above is sensitive, do not use this tool without additional measur
 
 ---
 
+## Quick start
+
+```bash
+# 1. Generate a key pair
+mcap-encrypt keygen --out mykey
+# Writes mykey.priv.pem (keep secret) and mykey.pub.pem
+
+# 2. Encrypt
+mcap-encrypt encrypt --key mykey.pub.pem input.mcap encrypted.mcap
+
+# 3. Decrypt
+mcap-encrypt decrypt --key mykey.priv.pem encrypted.mcap output.mcap
+```
+
+If the output file already exists, both commands fail with an error. Pass `--force` to overwrite.
+
+---
+
 ## Install
 
 ### Go CLI
@@ -175,24 +195,6 @@ npm install mcap-encrypt
 ```
 
 Requires Node.js 18+ (uses the built-in Web Crypto API). Works in modern browsers without polyfills.
-
----
-
-## Quick start
-
-```bash
-# 1. Generate a key pair
-mcap-encrypt keygen --out mykey
-# Writes mykey.priv.pem (keep secret) and mykey.pub.pem
-
-# 2. Encrypt
-mcap-encrypt encrypt --key mykey.pub.pem input.mcap encrypted.mcap
-
-# 3. Decrypt
-mcap-encrypt decrypt --key mykey.priv.pem encrypted.mcap output.mcap
-```
-
-If the output file already exists, both commands fail with an error. Pass `--force` to overwrite.
 
 ---
 
@@ -379,7 +381,7 @@ The `data` payload (all strings and byte fields use 4-byte LE length prefixes):
 | `uncompressed_size` | `uint64 LE` | Byte length of the records after decompression |
 | `uncompressed_crc` | `uint32 LE` | CRC32-IEEE of the decompressed records (0 = not checked) |
 | `compression` | `string` | Compression applied before encryption: `"zstd"` or `""` |
-| `key_id` | `string` | Matches the `key_id` in the WrappedKeyData attachment |
+| `key_id` | `string` | Content-key slot identifier included in AAD. Currently always `"key-1"`; not the recipient fingerprint. |
 | `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
 | `encrypted_data` | `bytes` | Ciphertext including the 16-byte Poly1305 tag (4-byte LE length prefix + N bytes) |
 
