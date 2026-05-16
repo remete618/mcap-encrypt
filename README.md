@@ -14,11 +14,9 @@ Robotics logs contain camera frames, lidar scans, telemetry, and customer-site d
 
 Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption is the harder part.
 
-<table><tr>
-<td>📌 <em>Status:</em> v0.x · experimental · not externally audited</td>
-<td>✅ <em>Best for:</em> MCAP logs at rest, schemas + channels stay readable</td>
-<td>🚫 <em>Not for:</em> hiding topic names, timestamps, or attachments</td>
-</tr></table>
+📌 *Status:* v0.x · experimental · not externally audited
+✅ *Best for:* MCAP logs at rest, schemas + channels stay readable
+🚫 *Not for:* hiding topic names, timestamps, or attachments
 
 ---
 
