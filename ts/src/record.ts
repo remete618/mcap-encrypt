@@ -9,6 +9,7 @@ export const OP_CHANNEL = 0x04;
 export const OP_MESSAGE = 0x05;
 export const OP_CHUNK = 0x06;
 export const OP_ATTACHMENT = 0x09;
+export const OP_METADATA = 0x0c;
 export const OP_DATA_END = 0x0f;
 export const OP_ENCRYPTED_CHUNK = 0x81;
 

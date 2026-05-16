@@ -9,6 +9,7 @@ import {
   OP_DATA_END,
   OP_FOOTER,
   OP_MESSAGE,
+  OP_METADATA,
   OP_ENCRYPTED_CHUNK,
   readMagic,
   readRecord,
@@ -24,6 +25,8 @@ import {
   parseSchema,
   parseChannel,
   parseMessage,
+  parseMetadata,
+  encodeMetadata,
   parseHeader,
   encodeSchema,
   encodeChannel,
@@ -31,6 +34,7 @@ import {
   type Schema,
   type Channel,
   type Message,
+  type Metadata,
 } from "./mcap.js";
 import { decompressChunkData } from "./decompress.js";
 import { chunkAAD } from "./encrypt.js";
@@ -40,6 +44,7 @@ import { crc32 } from "./crc32.js";
 const OP_MESSAGE_INDEX = 0x07;
 const OP_CHUNK_INDEX = 0x08;
 const OP_STATISTICS = 0x0a;
+const OP_METADATA_INDEX = 0x0d;
 const OP_SUMMARY_OFFSET = 0x0e;
 
 const MCAP_MAGIC = new Uint8Array([0x89, 0x4d, 0x43, 0x41, 0x50, 0x30, 0x0d, 0x0a]);
@@ -77,7 +82,7 @@ function parseInnerRecords(decompressed: Uint8Array): Message[] {
 // schemas, channels, messages, and plaintext attachments. All messages are placed
 // in a single uncompressed chunk followed by MessageIndex records, then a complete
 // summary section with ChunkIndex, Statistics, and SummaryOffset records.
-function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Message[], attachments: Uint8Array[] = [], profile = "", library = "mcap-encrypt"): Uint8Array {
+function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Message[], attachments: Uint8Array[] = [], metadataRecs: Metadata[] = [], profile = "", library = "mcap-encrypt"): Uint8Array {
   const parts: Uint8Array[] = [];
   let pos = 0n;
 
@@ -194,6 +199,14 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
     emitRecord(OP_ATTACHMENT, attRaw);
   }
 
+  // Metadata records in data section; track offsets for MetadataIndex in summary.
+  const metadataIndexEntries: { offset: bigint; length: bigint; name: string }[] = [];
+  for (const m of metadataRecs) {
+    const mStart = pos;
+    emitRecord(OP_METADATA, encodeMetadata(m));
+    metadataIndexEntries.push({ offset: mStart, length: pos - mStart, name: m.name });
+  }
+
   // DataEnd
   emitRecord(OP_DATA_END, w((b) => b.writeUint32(0)));
 
@@ -219,7 +232,7 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
       b.writeUint16(schemas.length);          // schema_count
       b.writeUint32(channels.length);         // channel_count
       b.writeUint32(attachments.length);       // attachment_count
-      b.writeUint32(0);                       // metadata_count
+      b.writeUint32(metadataRecs.length);     // metadata_count
       b.writeUint32(hasMessages ? 1 : 0);    // chunk_count
       b.writeUint64(msgStart);               // message_start_time
       b.writeUint64(msgEnd);                 // message_end_time
@@ -264,6 +277,16 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
   }
   const chunkIndexLength = pos - chunkIndexStart;
 
+  // MetadataIndex records (one per metadata record)
+  const metaIndexStart = pos;
+  for (const mi of metadataIndexEntries) {
+    emitRecord(
+      OP_METADATA_INDEX,
+      w((b) => { b.writeUint64(mi.offset); b.writeUint64(mi.length); b.writeString(mi.name); }),
+    );
+  }
+  const metaIndexLength = pos - metaIndexStart;
+
   // SummaryOffset records
   const summaryOffsetStart = pos;
   const emitSO = (opcode: number, start: bigint, length: bigint): void => {
@@ -274,6 +297,7 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
   emitSO(OP_CHANNEL, sumChannelStart, sumChannelLength);
   emitSO(OP_STATISTICS, statsStart, statsLength);
   if (hasMessages) emitSO(OP_CHUNK_INDEX, chunkIndexStart, chunkIndexLength);
+  emitSO(OP_METADATA_INDEX, metaIndexStart, metaIndexLength);
 
   // Footer
   emitRecord(
@@ -447,6 +471,7 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
   const channels: Channel[] = [];
   const messages: Message[] = [];
   const plainAttachments: Uint8Array[] = [];
+  const metadataRecs: Metadata[] = [];
 
   scan: while (r.remaining > 0) {
     const rec = readRecord(r);
@@ -467,6 +492,9 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
         break;
       case OP_CHANNEL:
         channels.push(parseChannel(new Uint8Array(data)));
+        break;
+      case OP_METADATA:
+        metadataRecs.push(parseMetadata(new Uint8Array(data)));
         break;
       case OP_ATTACHMENT: {
         const att = parseAttachment(new Uint8Array(data));
@@ -499,7 +527,7 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
     throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
   }
 
-  return buildIndexedMcap(schemas, channels, messages, plainAttachments, inputProfile, inputLibrary);
+  return buildIndexedMcap(schemas, channels, messages, plainAttachments, metadataRecs, inputProfile, inputLibrary);
 }
 
 export async function* iterateMessages(

@@ -101,6 +101,33 @@ export function encodeHeader(profile: string, library: string): Uint8Array {
   return w.toUint8Array();
 }
 
+export interface Metadata {
+  name: string;
+  metadata: Map<string, string>;
+}
+
+export function parseMetadata(data: Uint8Array): Metadata {
+  const r = new BinaryReader(data);
+  const name = r.readString();
+  const count = r.readUint32();
+  const metadata = new Map<string, string>();
+  for (let i = 0; i < count; i++) {
+    metadata.set(r.readString(), r.readString());
+  }
+  return { name, metadata };
+}
+
+export function encodeMetadata(m: Metadata): Uint8Array {
+  const w = new BinaryWriter();
+  w.writeString(m.name);
+  w.writeUint32(m.metadata.size);
+  for (const [k, v] of m.metadata) {
+    w.writeString(k);
+    w.writeString(v);
+  }
+  return w.toUint8Array();
+}
+
 export function encodeDataEnd(): Uint8Array {
   const w = new BinaryWriter();
   w.writeUint32(0); // data_section_crc = 0

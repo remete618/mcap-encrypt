@@ -1,5 +1,5 @@
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
-import { BinaryReader, BinaryWriter } from "./binary.js";
+import { BinaryReader, BinaryWriter, safeBigintToNumber } from "./binary.js";
 import {
   MAGIC,
   OP_HEADER,
@@ -10,6 +10,7 @@ import {
   OP_ATTACHMENT,
   OP_DATA_END,
   OP_FOOTER,
+  OP_METADATA,
   OP_ENCRYPTED_CHUNK,
   readMagic,
   readRecord,
@@ -75,7 +76,7 @@ function parseStandardChunk(data: Uint8Array): {
   const uncompressedCrc = r.readUint32();
   const compression = r.readString();
   const compressedSize = r.readUint64();
-  const records = new Uint8Array(r.readBytes(Number(compressedSize)));
+  const records = new Uint8Array(r.readBytes(safeBigintToNumber(compressedSize, "compressed size")));
   return { messageStartTime, messageEndTime, uncompressedSize, uncompressedCrc, compression, records };
 }
 
@@ -207,6 +208,12 @@ export async function encryptMcap(
           flushPending();
           writeRecord(writer, OP_ATTACHMENT, data);
         }
+        break;
+      }
+
+      case OP_METADATA: {
+        flushPending();
+        writeRecord(writer, OP_METADATA, data);
         break;
       }
 

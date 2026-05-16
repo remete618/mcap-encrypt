@@ -48,6 +48,9 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 	if absIn == absOut {
 		return fmt.Errorf("inputPath and outputPath must differ")
 	}
+	if _, statErr := os.Stat(absOut); statErr == nil {
+		return fmt.Errorf("output file already exists: %q (delete it first)", outputPath)
+	}
 
 	symKey := make([]byte, chacha20poly1305.KeySize)
 	if _, err := rand.Read(symKey); err != nil {

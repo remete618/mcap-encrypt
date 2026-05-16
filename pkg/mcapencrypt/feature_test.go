@@ -234,6 +234,95 @@ func TestSameInputOutputRejected(t *testing.T) {
 	require.Contains(t, err.Error(), "must differ")
 }
 
+// TestEncryptRefusesExistingOutput verifies Encrypt returns an error when the output path already exists.
+func TestEncryptRefusesExistingOutput(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "encrypted.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+
+	existing, err := os.Create(encPath)
+	require.NoError(t, err)
+	require.NoError(t, existing.Close())
+
+	err = mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already exists")
+}
+
+// TestDecryptRefusesExistingOutput verifies Decrypt returns an error when the output path already exists.
+func TestDecryptRefusesExistingOutput(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "encrypted.mcap")
+	decPath := filepath.Join(dir, "decrypted.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	existing, err := os.Create(decPath)
+	require.NoError(t, err)
+	require.NoError(t, existing.Close())
+
+	err = mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already exists")
+}
+
+// TestMetadataRoundTrip verifies metadata records are preserved through encrypt/decrypt.
+func TestMetadataRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "encrypted.mcap")
+	decPath := filepath.Join(dir, "decrypted.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithMetadata(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
+
+	f, err := os.Open(decPath)
+	require.NoError(t, err)
+	defer f.Close()
+	r, err := mcap.NewReader(f)
+	require.NoError(t, err)
+	info, err := r.Info()
+	require.NoError(t, err)
+	require.Len(t, info.MetadataIndexes, 1, "expected exactly 1 metadata record after round-trip")
+	require.Equal(t, "robot_info", info.MetadataIndexes[0].Name)
+
+	m, getErr := r.GetMetadata(info.MetadataIndexes[0].Offset)
+	require.NoError(t, getErr)
+	require.Equal(t, "ABC-123", m.Metadata["serial"])
+	require.Equal(t, "1.2.3", m.Metadata["version"])
+}
+
+func buildTestMCAPWithMetadata(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer f.Close()
+	w, err := mcap.NewWriter(f, &mcap.WriterOptions{Chunked: true, ChunkSize: 1024, Compression: mcap.CompressionZSTD})
+	require.NoError(t, err)
+	require.NoError(t, w.WriteHeader(&mcap.Header{Profile: "test"}))
+	require.NoError(t, w.WriteSchema(&mcap.Schema{ID: 1, Name: "s", Encoding: "json", Data: []byte("{}")}))
+	require.NoError(t, w.WriteChannel(&mcap.Channel{ID: 1, SchemaID: 1, Topic: "/t", MessageEncoding: "json"}))
+	require.NoError(t, w.WriteMessage(&mcap.Message{
+		ChannelID: 1, Sequence: 0, LogTime: 1_000_000, PublishTime: 1_000_000, Data: []byte(`{}`),
+	}))
+	require.NoError(t, w.WriteMetadata(&mcap.Metadata{
+		Name:     "robot_info",
+		Metadata: map[string]string{"serial": "ABC-123", "version": "1.2.3"},
+	}))
+	require.NoError(t, w.Close())
+}
+
 // TestEncryptedChunkOpcodePresent verifies 0x81 records appear in the output.
 func TestEncryptedChunkOpcodePresent(t *testing.T) {
 	dir := t.TempDir()

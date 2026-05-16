@@ -8,6 +8,7 @@ import {
   OP_MESSAGE,
   OP_CHUNK,
   OP_ATTACHMENT,
+  OP_METADATA,
   OP_DATA_END,
   OP_FOOTER,
 } from "../src/record.js";
@@ -192,6 +193,72 @@ export function buildNonChunkedMcap(): Uint8Array {
     channelId: 1, sequence: 0, logTime: 1_000_000_000n, publishTime: 1_000_000_000n,
     data: new TextEncoder().encode('{"x":1}'),
   }));
+  writeRecord(w, OP_DATA_END, encodeDataEnd());
+  writeRecord(w, OP_FOOTER, encodeFooter());
+  writeMagic(w);
+  return w.toUint8Array();
+}
+
+// Builds a minimal chunked MCAP that includes a Metadata record with two key-value pairs.
+export function buildTestMcapWithMetadata(): Uint8Array {
+  const w = new BinaryWriter();
+  writeMagic(w);
+  writeRecord(w, 0x01, encodeHeader("test", ""));
+  writeRecord(w, OP_SCHEMA, encodeSchema({ id: 1, name: "s", encoding: "json", data: new Uint8Array(0) }));
+  writeRecord(w, OP_CHANNEL, encodeChannel({ id: 1, schemaId: 1, topic: "/t", messageEncoding: "json", metadata: new Map() }));
+
+  const inner = new BinaryWriter();
+  writeRecord(inner, OP_MESSAGE, encodeMessage({
+    channelId: 1, sequence: 0, logTime: 1_000_000n, publishTime: 1_000_000n,
+    data: new TextEncoder().encode("{}"),
+  }));
+  const innerBytes = inner.toUint8Array();
+  const chunkBody = new BinaryWriter();
+  chunkBody.writeUint64(1_000_000n);
+  chunkBody.writeUint64(1_000_000n);
+  chunkBody.writeUint64(BigInt(innerBytes.length));
+  chunkBody.writeUint32(0);
+  chunkBody.writeString("");
+  chunkBody.writeUint64(BigInt(innerBytes.length));
+  chunkBody.writeBytes(innerBytes);
+  writeRecord(w, OP_CHUNK, chunkBody.toUint8Array());
+
+  // Metadata record (opcode 0x0C): string name + uint32 count + (key, value)*
+  const metaBody = new BinaryWriter();
+  metaBody.writeString("robot_info");
+  metaBody.writeUint32(2);
+  metaBody.writeString("serial");
+  metaBody.writeString("ABC-123");
+  metaBody.writeString("version");
+  metaBody.writeString("1.2.3");
+  writeRecord(w, OP_METADATA, metaBody.toUint8Array());
+
+  writeRecord(w, OP_DATA_END, encodeDataEnd());
+  writeRecord(w, OP_FOOTER, encodeFooter());
+  writeMagic(w);
+  return w.toUint8Array();
+}
+
+// Builds a MCAP with a chunk that declares compressedSize > Number.MAX_SAFE_INTEGER.
+// Used to verify that safeBigintToNumber throws a descriptive error rather than
+// silently producing a wrong numeric value.
+export function buildOversizedChunkMcap(): Uint8Array {
+  const w = new BinaryWriter();
+  writeMagic(w);
+  writeRecord(w, 0x01, encodeHeader("test", ""));
+  writeRecord(w, OP_SCHEMA, encodeSchema({ id: 1, name: "s", encoding: "json", data: new Uint8Array(0) }));
+  writeRecord(w, OP_CHANNEL, encodeChannel({ id: 1, schemaId: 1, topic: "/t", messageEncoding: "json", metadata: new Map() }));
+
+  // Chunk header with compressedSize = MAX_SAFE_INTEGER + 1; no actual record bytes follow.
+  const chunkBody = new BinaryWriter();
+  chunkBody.writeUint64(0n); // message_start_time
+  chunkBody.writeUint64(0n); // message_end_time
+  chunkBody.writeUint64(0n); // uncompressed_size
+  chunkBody.writeUint32(0);  // uncompressed_crc
+  chunkBody.writeString(""); // compression
+  chunkBody.writeUint64(BigInt(Number.MAX_SAFE_INTEGER) + 1n); // compressedSize = oversized
+  writeRecord(w, OP_CHUNK, chunkBody.toUint8Array());
+
   writeRecord(w, OP_DATA_END, encodeDataEnd());
   writeRecord(w, OP_FOOTER, encodeFooter());
   writeMagic(w);

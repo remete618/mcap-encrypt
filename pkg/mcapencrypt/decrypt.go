@@ -32,6 +32,9 @@ func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
 	if absIn == absOut {
 		return fmt.Errorf("inputPath and outputPath must differ")
 	}
+	if _, statErr := os.Stat(absOut); statErr == nil {
+		return fmt.Errorf("output file already exists: %q (delete it first)", outputPath)
+	}
 
 	priv, err := LoadPrivateKey(privKeyPath)
 	if err != nil {

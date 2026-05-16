@@ -9,6 +9,8 @@ import {
 import { BinaryReader } from "../src/binary.js";
 import {
   buildTestMcapWithAttachment,
+  buildTestMcapWithMetadata,
+  buildOversizedChunkMcap,
   buildEmptyMcap,
   collectMessages,
 } from "./helpers.js";
@@ -61,6 +63,48 @@ describe("iterateMessages error paths", () => {
   });
 });
 
+describe("metadata passthrough", () => {
+  it("metadata record survives encrypt/decrypt round-trip", async () => {
+    const plain = buildTestMcapWithMetadata();
+    const enc = await encryptMcap(plain, keys.publicKeyPem);
+    const dec = await decryptMcap(enc, keys.privateKeyPem);
+
+    const names = readMetadataNames(dec);
+    expect(names).toContain("robot_info");
+  });
+
+  it("metadata key-value pairs are preserved correctly", async () => {
+    const plain = buildTestMcapWithMetadata();
+    const enc = await encryptMcap(plain, keys.publicKeyPem);
+    const dec = await decryptMcap(enc, keys.privateKeyPem);
+
+    const recs = readMetadataRecords(dec);
+    const robotInfo = recs.find((r) => r.name === "robot_info");
+    expect(robotInfo).toBeDefined();
+    expect(robotInfo?.metadata.get("serial")).toBe("ABC-123");
+    expect(robotInfo?.metadata.get("version")).toBe("1.2.3");
+  });
+
+  it("metadata_count in Statistics matches the number of metadata records", async () => {
+    const plain = buildTestMcapWithMetadata();
+    const enc = await encryptMcap(plain, keys.publicKeyPem);
+    const dec = await decryptMcap(enc, keys.privateKeyPem);
+
+    // Scan for Statistics record (opcode 0x0a) and check metadata_count field.
+    const stats = readStatisticsMetadataCount(dec);
+    expect(stats).toBe(1);
+  });
+});
+
+describe("safeBigintToNumber guard", () => {
+  it("throws a descriptive error when chunk compressedSize exceeds MAX_SAFE_INTEGER", async () => {
+    const mcap = buildOversizedChunkMcap();
+    await expect(encryptMcap(mcap, keys.publicKeyPem)).rejects.toThrow(
+      /exceeds maximum safe integer/,
+    );
+  });
+});
+
 // --- scan helpers ---
 
 function readAttachmentNames(mcap: Uint8Array): string[] {
@@ -94,4 +138,61 @@ function readMcapHeader(mcap: Uint8Array): { profile: string; library: string } 
     pos += 9 + length;
   }
   throw new Error("no Header record found in MCAP");
+}
+
+function readMetadataNames(mcap: Uint8Array): string[] {
+  const view = new DataView(mcap.buffer, mcap.byteOffset);
+  const names: string[] = [];
+  let pos = 8;
+  while (pos + 9 <= mcap.length) {
+    const opcode = mcap[pos]!;
+    const length = Number(view.getBigUint64(pos + 1, true));
+    if (opcode === 0x0c) {
+      const r = new BinaryReader(mcap.slice(pos + 9, pos + 9 + length));
+      names.push(r.readString());
+    }
+    pos += 9 + length;
+  }
+  return names;
+}
+
+function readMetadataRecords(mcap: Uint8Array): { name: string; metadata: Map<string, string> }[] {
+  const view = new DataView(mcap.buffer, mcap.byteOffset);
+  const recs: { name: string; metadata: Map<string, string> }[] = [];
+  let pos = 8;
+  while (pos + 9 <= mcap.length) {
+    const opcode = mcap[pos]!;
+    const length = Number(view.getBigUint64(pos + 1, true));
+    if (opcode === 0x0c) {
+      const r = new BinaryReader(mcap.slice(pos + 9, pos + 9 + length));
+      const name = r.readString();
+      const count = r.readUint32();
+      const metadata = new Map<string, string>();
+      for (let i = 0; i < count; i++) {
+        metadata.set(r.readString(), r.readString());
+      }
+      recs.push({ name, metadata });
+    }
+    pos += 9 + length;
+  }
+  return recs;
+}
+
+function readStatisticsMetadataCount(mcap: Uint8Array): number {
+  const view = new DataView(mcap.buffer, mcap.byteOffset);
+  let pos = 8;
+  while (pos + 9 <= mcap.length) {
+    const opcode = mcap[pos]!;
+    const length = Number(view.getBigUint64(pos + 1, true));
+    if (opcode === 0x0a) {
+      const r = new BinaryReader(mcap.slice(pos + 9, pos + 9 + length));
+      r.readUint64(); // message_count
+      r.readUint16(); // schema_count
+      r.readUint32(); // channel_count
+      r.readUint32(); // attachment_count
+      return r.readUint32(); // metadata_count
+    }
+    pos += 9 + length;
+  }
+  throw new Error("no Statistics record found");
 }
