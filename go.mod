@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/foxglove/mcap/go/mcap v1.7.4
-	github.com/klauspost/compress v1.16.7
+	github.com/klauspost/compress v1.18.6
 	github.com/pierrec/lz4/v4 v4.1.22
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/crypto v0.51.0
