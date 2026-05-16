@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -31,7 +29,9 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 //   - inputPath and outputPath must differ.
 //   - At least one public key must be provided.
 //
-// Chunks are encrypted concurrently using all available CPU cores.
+// The encryption is single-pass over the input after an initial schema/channel
+// scan: each chunk is encrypted and written to the output immediately without
+// buffering the full file in memory.
 func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr error) {
 	if len(pubKeyPaths) == 0 {
 		return fmt.Errorf("at least one public key is required")
@@ -135,47 +135,59 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 		}
 	}
 
-	// --- Pass 2: collect all records as write-ops; buffer raw chunks. ---
-	// Chunks are not encrypted here; they are collected for concurrent
-	// encryption after the full scan is complete.
-	type writeOp struct {
-		opcode   byte
-		data     []byte
-		chunkIdx int // -1 for regular records; >=0 indexes rawChunks
-	}
-	var ops []writeOp
-	var rawChunks []*mcap.Chunk
-
-	flushed := false
-	flushPending := func() {
-		if flushed {
-			return
-		}
-		flushed = true
-		for _, r := range pending {
-			ops = append(ops, writeOp{r.opcode, r.data, -1})
-		}
-		// Write a wrapped-key attachment for each recipient immediately
-		// before the first encrypted chunk so decoders can stream in one pass.
-		now := uint64(time.Now().UnixNano())
-		for _, wkd := range wkds {
-			attBytes := buildAttachmentBytes(now, 0, AttachmentName, AttachmentMediaType, wkd.Encode())
-			ops = append(ops, writeOp{opcodeAttach, attBytes, -1})
-		}
-	}
-
-	// copy returns an independent copy of d, needed because lexer reuses buffers.
-	cp := func(d []byte) []byte {
-		c := make([]byte, len(d))
-		copy(c, d)
-		return c
-	}
-
+	// --- Pass 2: open output and stream-encrypt. ---
+	// Each chunk is encrypted and written immediately; no chunk buffering.
 	inFile, err := os.Open(inputPath)
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
 	defer inFile.Close()
+
+	tmpFile, err := os.CreateTemp(filepath.Dir(outputPath), ".mcap-encrypt-tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp output: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	var tmpClosed bool
+	defer func() {
+		if !tmpClosed {
+			if closeErr := tmpFile.Close(); closeErr != nil && retErr == nil {
+				retErr = fmt.Errorf("close temp output: %w", closeErr)
+			}
+		}
+		if retErr != nil {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	if err := WriteMagic(tmpFile); err != nil {
+		return err
+	}
+
+	const keyID = "key-1"
+	now := uint64(time.Now().UnixNano())
+
+	// flushed tracks whether schemas, channels, and key attachments have been
+	// written. They must appear before the first EncryptedChunk record.
+	var flushed bool
+	flushPending := func() error {
+		if flushed {
+			return nil
+		}
+		flushed = true
+		for _, r := range pending {
+			if err := WriteRecord(tmpFile, r.opcode, r.data); err != nil {
+				return err
+			}
+		}
+		for _, wkd := range wkds {
+			attBytes := buildAttachmentBytes(now, 0, AttachmentName, AttachmentMediaType, wkd.Encode())
+			if err := WriteRecord(tmpFile, opcodeAttach, attBytes); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 
 	lexer, err := mcap.NewLexer(inFile, &mcap.LexerOptions{
 		EmitChunks: true,
@@ -184,16 +196,24 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 			if readErr != nil {
 				return readErr
 			}
-			attBytes := buildAttachmentBytes(ar.LogTime, ar.CreateTime, ar.Name, ar.MediaType, data)
-			ops = append(ops, writeOp{opcodeAttach, attBytes, -1})
-			return nil
+			// Skip wrapped-key attachments from previously encrypted inputs.
+			if ar.Name == AttachmentName {
+				return nil
+			}
+			if err := flushPending(); err != nil {
+				return err
+			}
+			return WriteRecord(tmpFile, opcodeAttach, buildAttachmentBytes(ar.LogTime, ar.CreateTime, ar.Name, ar.MediaType, data))
 		},
 	})
 	if err != nil {
 		return fmt.Errorf("create lexer: %w", err)
 	}
 
+	var chunkIdx int
 	var tokenBuf []byte
+
+outer:
 	for {
 		tok, data, lexErr := lexer.Next(tokenBuf)
 		if lexErr != nil {
@@ -210,43 +230,54 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 				"re-encode with chunking enabled before encrypting")
 
 		case mcap.TokenHeader:
-			op, ok := passthroughOpcode[tok]
-			if !ok {
-				return fmt.Errorf("unhandled token type %v", tok)
+			if err := WriteRecord(tmpFile, passthroughOpcode[tok], data); err != nil {
+				return err
 			}
-			ops = append(ops, writeOp{op, cp(data), -1})
 
 		case mcap.TokenSchema, mcap.TokenChannel:
-			// Skip: already collected in pass 1 from inside chunks.
+			// Already collected in pass 1 and written via flushPending.
 
 		case mcap.TokenMetadata:
-			flushPending()
-			op, ok := passthroughOpcode[tok]
-			if !ok {
-				return fmt.Errorf("unhandled token type %v", tok)
+			if err := flushPending(); err != nil {
+				return err
 			}
-			ops = append(ops, writeOp{op, cp(data), -1})
+			if err := WriteRecord(tmpFile, passthroughOpcode[tok], data); err != nil {
+				return err
+			}
 
 		case mcap.TokenChunk:
-			flushPending()
+			if err := flushPending(); err != nil {
+				return err
+			}
 			chunk, parseErr := mcap.ParseChunk(data)
 			if parseErr != nil {
 				return fmt.Errorf("parse chunk: %w", parseErr)
 			}
-			// Copy Records: chunk.Records slices into the reused tokenBuf.
-			recsCopy := make([]byte, len(chunk.Records))
-			copy(recsCopy, chunk.Records)
-			chunk.Records = recsCopy
-			ops = append(ops, writeOp{0, nil, len(rawChunks)})
-			rawChunks = append(rawChunks, chunk)
+			// encryptChunk is called synchronously before the next lexer.Next(),
+			// so chunk.Records (which aliases tokenBuf) is still valid here.
+			ec, encErr := encryptChunk(chunk, symKey, keyID, fileID, chunkIdx)
+			if encErr != nil {
+				return fmt.Errorf("encrypt chunk %d: %w", chunkIdx, encErr)
+			}
+			chunkIdx++
+			if err := WriteRecord(tmpFile, OpcodeEncryptedChunk, ec.Encode()); err != nil {
+				return err
+			}
 
 		case mcap.TokenDataEnd:
-			// Flush for schema/channel-only files with no chunks.
-			flushPending()
-			ops = append(ops, writeOp{opcodeDataEnd, cp(data), -1})
+			// Flush in case there were no chunks (schema/channel-only files).
+			if err := flushPending(); err != nil {
+				return err
+			}
+			if err := WriteRecord(tmpFile, opcodeDataEnd, data); err != nil {
+				return err
+			}
 
 		case mcap.TokenFooter:
-			ops = append(ops, writeOp{opcodeFooter, cp(emptyFooter), -1})
+			if err := WriteRecord(tmpFile, opcodeFooter, emptyFooter); err != nil {
+				return err
+			}
+			break outer
 
 		case mcap.TokenMessageIndex, mcap.TokenChunkIndex,
 			mcap.TokenStatistics, mcap.TokenSummaryOffset,
@@ -259,62 +290,6 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 		}
 	}
 
-	// --- Concurrent chunk encryption. ---
-	// Each chunk is encrypted independently; results are stored in order.
-	const keyID = "key-1"
-	encChunks := make([]*EncryptedChunk, len(rawChunks))
-	encErrs := make([]error, len(rawChunks))
-
-	sem := make(chan struct{}, runtime.NumCPU())
-	var wg sync.WaitGroup
-	for i, chunk := range rawChunks {
-		wg.Add(1)
-		go func(i int, chunk *mcap.Chunk) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			encChunks[i], encErrs[i] = encryptChunk(chunk, symKey, keyID, fileID, i)
-		}(i, chunk)
-	}
-	wg.Wait()
-	for _, encErr := range encErrs {
-		if encErr != nil {
-			return fmt.Errorf("encrypt chunk: %w", encErr)
-		}
-	}
-
-	// --- Write output atomically: write to a temp file, rename on success. ---
-	tmpFile, err := os.CreateTemp(filepath.Dir(outputPath), ".mcap-encrypt-tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp output: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	var tmpClosed bool
-	defer func() {
-		if !tmpClosed {
-			if err := tmpFile.Close(); err != nil && retErr == nil {
-				retErr = fmt.Errorf("close temp output: %w", err)
-			}
-		}
-		if retErr != nil {
-			os.Remove(tmpPath)
-		}
-	}()
-
-	if err := WriteMagic(tmpFile); err != nil {
-		return err
-	}
-	for _, op := range ops {
-		if op.chunkIdx >= 0 {
-			if err := WriteRecord(tmpFile, OpcodeEncryptedChunk, encChunks[op.chunkIdx].Encode()); err != nil {
-				return err
-			}
-		} else {
-			if err := WriteRecord(tmpFile, op.opcode, op.data); err != nil {
-				return err
-			}
-		}
-	}
 	if err := WriteMagic(tmpFile); err != nil {
 		return err
 	}
@@ -322,8 +297,7 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 		return fmt.Errorf("flush temp output: %w", err)
 	}
 	tmpClosed = true
-	retErr = os.Rename(tmpPath, outputPath)
-	return retErr
+	return os.Rename(tmpPath, outputPath)
 }
 
 // passthroughOpcode maps token types that are written verbatim to their opcodes.
