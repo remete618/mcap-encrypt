@@ -39,3 +39,19 @@ jobs:
             dist/mcap-encrypt_*.tar.gz
             dist/mcap-encrypt_*.zip
             dist/checksums.txt
+
+      - name: SBOM — Go
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          artifact-name: sbom-go.spdx.json
+          upload-release-assets: true
+
+      - name: SBOM — npm
+        uses: anchore/sbom-action@v0
+        with:
+          path: ts
+          format: spdx-json
+          artifact-name: sbom-npm.spdx.json
+          upload-release-assets: true
