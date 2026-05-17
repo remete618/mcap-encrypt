@@ -415,6 +415,40 @@ func TestOverwriteDecryptRejectedByLibrary(t *testing.T) {
 	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
 }
 
+// TestEncryptedFileSummarySection verifies the structural guarantees of an encrypted file:
+// summary records (ChunkIndex, Statistics, Schema, Channel) are present and readable
+// without a key, no plaintext Message records appear, and EncryptedChunk records are present.
+func TestEncryptedFileSummarySection(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	data, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+
+	seen := map[byte]bool{}
+	pos := 8
+	for pos+9 <= len(data) {
+		op := data[pos]
+		seen[op] = true
+		n := int(binary.LittleEndian.Uint64(data[pos+1:]))
+		pos += 9 + n
+	}
+
+	require.True(t, seen[0x81], "EncryptedChunk (0x81) must be present")
+	require.True(t, seen[0x08], "ChunkIndex (0x08) must be present in summary section")
+	require.True(t, seen[0x0a], "Statistics (0x0a) must be present in summary section")
+	require.True(t, seen[0x03], "Schema (0x03) must be readable without a key")
+	require.True(t, seen[0x04], "Channel (0x04) must be readable without a key")
+	require.True(t, seen[0x09], "WrappedKeyAttachment (0x09) must be present")
+	require.False(t, seen[0x05], "plaintext Message (0x05) must not appear in encrypted file")
+}
+
 // TestEncryptedChunkOpcodePresent verifies 0x81 records appear in the output.
 func TestEncryptedChunkOpcodePresent(t *testing.T) {
 	dir := t.TempDir()
