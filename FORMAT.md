@@ -1,6 +1,6 @@
 # mcap-encrypt File Format Specification
 
-Version: **3** (current)
+Version: **4** (current)
 
 ---
 
@@ -29,12 +29,19 @@ see only schemas, channels, and the key attachments in plaintext.
 <Manifest Attachment record>         opcode 0x09  — exactly one
 <EncryptedChunk records>             opcode 0x81  — one per original chunk
 <DataEnd record>                     opcode 0x0F
-<Footer record>                      opcode 0x02  — summary_start = 0 (no summary)
+<Summary section>                    — schemas, channels, Statistics, ChunkIndex records
+<Footer record>                      opcode 0x02  — summary_start points to summary section
 <magic>                              8 bytes
 ```
 
 All wrapped-key and manifest attachments appear **before** the first `EncryptedChunk`
 so a decoder can stream-decrypt in a single pass.
+
+The summary section allows seekable access by time range without decryption. Each
+`ChunkIndex` record (opcode `0x08`) points to an `EncryptedChunk` record at
+`chunk_start_offset`. A reader that does not understand opcode `0x81` will seek to
+that offset and skip the unknown record; a reader that does understand it can
+decrypt the specific chunk without scanning from the beginning.
 
 ---
 
@@ -172,6 +179,9 @@ XChaCha20-Poly1305 as described in the WrappedKey section above.
 | 1 | Initial format. AAD bound only `message_start_time` and `message_end_time`. No `file_id`. |
 | 2 | AAD expanded to include `file_id`, `chunk_index`, `key_id`, `compression`, `uncompressed_size`, and `uncompressed_crc`. `file_id` added to `WrappedKeyData`. Multi-recipient support. |
 | 3 | `key_id` field in `EncryptedChunk` renamed to `slot_id` (wire value unchanged: `"key-1"`). Added `Manifest Attachment` for truncation detection. Added X25519 key-wrapping algorithm. RSA key size upgraded to 4096 bits. |
+| 4 | Added summary section after `DataEnd`. Footer `summary_start` now points to a real summary containing `Schema`, `Channel`, `Statistics`, `ChunkIndex`, and `SummaryOffset` records. `ChunkIndex` entries point to `EncryptedChunk` records, enabling O(log n) time-range seeking without decryption. |
 
 Version 1 files are rejected by this implementation. Version 2 files decrypt correctly
-(manifest verification is skipped when the manifest attachment is absent). Re-encrypt to upgrade.
+(manifest verification is skipped when the manifest attachment is absent). Version 3
+files decrypt correctly (summary section is absent; decoders fall back to linear scan).
+Re-encrypt to upgrade.

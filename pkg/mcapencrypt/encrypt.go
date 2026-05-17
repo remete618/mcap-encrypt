@@ -244,6 +244,19 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 		return fmt.Errorf("create lexer: %w", err)
 	}
 
+	// encChunkMeta captures the file position and key metadata of each
+	// EncryptedChunk record so we can populate ChunkIndex in the summary.
+	type encChunkMeta struct {
+		fileOffset     int64  // byte position of the record's opcode byte
+		recordLen      int64  // 9 (header) + len(encoded data)
+		msgStart       uint64
+		msgEnd         uint64
+		compression    string
+		compressedSize uint64 // len(ciphertext), for ChunkIndex.compressed_size
+		uncompSize     uint64
+	}
+	var encChunkMetas []encChunkMeta
+
 	var chunkIdx int
 	var tokenBuf []byte
 
@@ -294,9 +307,27 @@ outer:
 				return fmt.Errorf("encrypt chunk %d: %w", chunkIdx, encErr)
 			}
 			chunkIdx++
-			if err := WriteRecord(tmpFile, OpcodeEncryptedChunk, ec.Encode()); err != nil {
+			ecData := ec.Encode()
+			startOff, seekErr := tmpFile.Seek(0, io.SeekCurrent)
+			if seekErr != nil {
+				return fmt.Errorf("seek before chunk %d: %w", chunkIdx-1, seekErr)
+			}
+			if err := WriteRecord(tmpFile, OpcodeEncryptedChunk, ecData); err != nil {
 				return err
 			}
+			endOff, seekErr := tmpFile.Seek(0, io.SeekCurrent)
+			if seekErr != nil {
+				return fmt.Errorf("seek after chunk %d: %w", chunkIdx-1, seekErr)
+			}
+			encChunkMetas = append(encChunkMetas, encChunkMeta{
+				fileOffset:     startOff,
+				recordLen:      endOff - startOff,
+				msgStart:       ec.MessageStartTime,
+				msgEnd:         ec.MessageEndTime,
+				compression:    ec.Compression,
+				compressedSize: uint64(len(ec.EncryptedData)),
+				uncompSize:     ec.UncompressedSize,
+			})
 
 		case mcap.TokenDataEnd:
 			// Flush in case there were no chunks (schema/channel-only files).
@@ -316,7 +347,146 @@ outer:
 			}
 
 		case mcap.TokenFooter:
-			if err := WriteRecord(tmpFile, opcodeFooter, emptyFooter); err != nil {
+			// Build a real summary section so seekable MCAP readers (and
+			// Foxglove Studio) can navigate the file by time range without
+			// decrypting. Schemas and channels are already plaintext; ChunkIndex
+			// records carry the EncryptedChunk offsets and time bounds.
+			summaryStart, seekErr := tmpFile.Seek(0, io.SeekCurrent)
+			if seekErr != nil {
+				return fmt.Errorf("seek for summary: %w", seekErr)
+			}
+
+			type group struct {
+				opcode    byte
+				absStart  int64
+				absLength int64
+			}
+			var groups []group
+
+			// Build summary in a byte buffer; track absolute file offsets by
+			// adding summaryStart + written-so-far.
+			var sumBuf []byte
+			written := int64(0)
+			emitRec := func(opcode byte, data []byte) {
+				hdr := [9]byte{opcode}
+				binary.LittleEndian.PutUint64(hdr[1:], uint64(len(data)))
+				sumBuf = append(sumBuf, hdr[:]...)
+				sumBuf = append(sumBuf, data...)
+				written += int64(9 + len(data))
+			}
+			put16 := func(b []byte, v uint16) { binary.LittleEndian.PutUint16(b, v) }
+			put32 := func(b []byte, v uint32) { binary.LittleEndian.PutUint32(b, v) }
+			put64 := func(b []byte, v uint64) { binary.LittleEndian.PutUint64(b, v) }
+			putStr := func(s string) []byte {
+				b := make([]byte, 4+len(s))
+				binary.LittleEndian.PutUint32(b, uint32(len(s)))
+				copy(b[4:], s)
+				return b
+			}
+
+			// Schema group
+			schemaStart := summaryStart + written
+			for _, r := range pending {
+				if r.opcode == opcodeSchema {
+					emitRec(opcodeSchema, r.data)
+				}
+			}
+			if l := summaryStart + written - schemaStart; l > 0 {
+				groups = append(groups, group{opcodeSchema, schemaStart, l})
+			}
+
+			// Channel group
+			channelStart := summaryStart + written
+			for _, r := range pending {
+				if r.opcode == opcodeChannel {
+					emitRec(opcodeChannel, r.data)
+				}
+			}
+			if l := summaryStart + written - channelStart; l > 0 {
+				groups = append(groups, group{opcodeChannel, channelStart, l})
+			}
+
+			// Statistics (message_count unknown for encrypted files = 0)
+			statsStart := summaryStart + written
+			var globalMsgStart, globalMsgEnd uint64
+			schemaCount, channelCount := 0, 0
+			for _, r := range pending {
+				switch r.opcode {
+				case opcodeSchema:
+					schemaCount++
+				case opcodeChannel:
+					channelCount++
+				}
+			}
+			if len(encChunkMetas) > 0 {
+				globalMsgStart = encChunkMetas[0].msgStart
+				globalMsgEnd = encChunkMetas[0].msgEnd
+				for _, m := range encChunkMetas[1:] {
+					if m.msgStart < globalMsgStart {
+						globalMsgStart = m.msgStart
+					}
+					if m.msgEnd > globalMsgEnd {
+						globalMsgEnd = m.msgEnd
+					}
+				}
+			}
+			statsBuf := make([]byte, 8+2+4+4+4+4+8+8+4)
+			o := 0
+			put64(statsBuf[o:], 0); o += 8                          // message_count (unknown)
+			put16(statsBuf[o:], uint16(schemaCount)); o += 2         // schema_count
+			put32(statsBuf[o:], uint32(channelCount)); o += 4        // channel_count
+			put32(statsBuf[o:], 0); o += 4                          // attachment_count
+			put32(statsBuf[o:], 0); o += 4                          // metadata_count
+			put32(statsBuf[o:], uint32(len(encChunkMetas))); o += 4 // chunk_count
+			put64(statsBuf[o:], globalMsgStart); o += 8             // message_start_time
+			put64(statsBuf[o:], globalMsgEnd); o += 8               // message_end_time
+			put32(statsBuf[o:], 0); o += 4                          // channel_message_counts: empty
+			emitRec(opcodeStatistics, statsBuf)
+			groups = append(groups, group{opcodeStatistics, statsStart, summaryStart + written - statsStart})
+
+			// ChunkIndex: one per EncryptedChunk, pointing at its file offset.
+			// Readers seek to chunk_start_offset and find opcode 0x81; tools
+			// that understand the encrypted format use this for O(log n) seeking.
+			chunkIdxStart := summaryStart + written
+			for _, m := range encChunkMetas {
+				comp := m.compression
+				ci := make([]byte, 8+8+8+8+4+8+4+len(comp)+8+8)
+				o := 0
+				put64(ci[o:], m.msgStart); o += 8
+				put64(ci[o:], m.msgEnd); o += 8
+				put64(ci[o:], uint64(m.fileOffset)); o += 8
+				put64(ci[o:], uint64(m.recordLen)); o += 8
+				put32(ci[o:], 0); o += 4           // message_index_offsets: empty
+				put64(ci[o:], 0); o += 8           // message_index_length: 0
+				copy(ci[o:], putStr(comp)); o += 4 + len(comp)
+				put64(ci[o:], m.compressedSize); o += 8
+				put64(ci[o:], m.uncompSize); o += 8
+				emitRec(opcodeChunkIndex, ci[:o])
+			}
+			if l := summaryStart + written - chunkIdxStart; l > 0 {
+				groups = append(groups, group{opcodeChunkIndex, chunkIdxStart, l})
+			}
+
+			// SummaryOffset records
+			summaryOffsetStart := summaryStart + written
+			for _, g := range groups {
+				so := make([]byte, 1+8+8)
+				so[0] = g.opcode
+				put64(so[1:], uint64(g.absStart))
+				put64(so[9:], uint64(g.absLength))
+				emitRec(opcodeSummaryOffset, so)
+			}
+
+			if _, err := tmpFile.Write(sumBuf); err != nil {
+				return fmt.Errorf("write summary: %w", err)
+			}
+
+			// Footer with real summary offsets.
+			footerBuf := make([]byte, 20)
+			put64(footerBuf[0:], uint64(summaryStart))
+			put64(footerBuf[8:], uint64(summaryOffsetStart))
+			// summary_crc = 0 (bytes 16-19 remain zero)
+			if err := WriteRecord(tmpFile, opcodeFooter, footerBuf); err != nil {
 				return err
 			}
 			break outer

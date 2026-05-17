@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
@@ -20,6 +23,7 @@ Usage:
   mcap-encrypt keygen  --out <basename>
   mcap-encrypt encrypt --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
   mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap> <output.mcap>
+  mcap-encrypt bridge  --key <priv.pem> [--addr <host:port>] <encrypted.mcap>
 
 Commands:
   keygen   Generate an RSA-4096 key pair.
@@ -32,6 +36,11 @@ Commands:
   decrypt  Decrypt an encrypted MCAP file using the private key.
            Supports RSA and X25519 private keys.
            Outputs a standard, fully-indexed MCAP file.
+
+  bridge   Start a Foxglove WebSocket bridge for an encrypted MCAP file.
+           Decrypts in memory and serves over the Foxglove ws-protocol.
+           Open Foxglove Studio and connect to ws://<addr> (default localhost:8765).
+           Press Ctrl-C to stop.
 `
 
 func main() {
@@ -49,6 +58,8 @@ func main() {
 		runEncrypt(os.Args[2:])
 	case "decrypt":
 		runDecrypt(os.Args[2:])
+	case "bridge":
+		runBridge(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
 		os.Exit(1)
@@ -207,6 +218,53 @@ func runDecrypt(args []string) {
 		fatal(err)
 	}
 	fmt.Printf("done  %.2fs%s\n", elapsed.Seconds(), formatThroughput(output, elapsed))
+}
+
+func runBridge(args []string) {
+	fs := flag.NewFlagSet("bridge", flag.ExitOnError)
+	key := fs.String("key", "", "path to RSA-4096 or X25519 private key (.priv.pem)")
+	addr := fs.String("addr", "localhost:8765", "WebSocket listen address (host:port)")
+	_ = fs.Parse(args)
+
+	if *key == "" {
+		fatal(fmt.Errorf("--key is required"))
+	}
+	if fs.NArg() != 1 {
+		fatal(fmt.Errorf("usage: bridge --key <priv.pem> [--addr <host:port>] <encrypted.mcap>"))
+	}
+	mcapPath := fs.Arg(0)
+
+	fmt.Printf("loading: %s\n", mcapPath)
+	stop := startSpinner("decrypting")
+	start := time.Now()
+
+	state, err := mcapencrypt.LoadBridgeState(mcapPath, *key)
+	close(stop)
+	if err != nil {
+		fatal(err)
+	}
+	elapsed := time.Since(start)
+	fmt.Printf("done  %.2fs\n", elapsed.Seconds())
+	fmt.Printf("listening: ws://%s\n", *addr)
+	fmt.Println("Open Foxglove Studio → Add connection → Foxglove WebSocket → ws://" + *addr)
+	fmt.Println("Press Ctrl-C to stop.")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sig
+		fmt.Println("\nshutting down...")
+		cancel()
+	}()
+
+	if err := mcapencrypt.ServeBridge(ctx, state, *addr); err != nil {
+		if ctx.Err() == nil {
+			fatal(err)
+		}
+	}
 }
 
 func fatal(err error) {

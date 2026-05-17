@@ -11,13 +11,16 @@ const (
 
 	OpcodeEncryptedChunk = byte(0x81)
 
-	opcodeHeader   = byte(0x01)
-	opcodeFooter   = byte(0x02)
-	opcodeSchema   = byte(0x03)
-	opcodeChannel  = byte(0x04)
-	opcodeAttach   = byte(0x09)
-	opcodeDataEnd  = byte(0x0F)
-	opcodeMetadata = byte(0x0C)
+	opcodeHeader        = byte(0x01)
+	opcodeFooter        = byte(0x02)
+	opcodeSchema        = byte(0x03)
+	opcodeChannel       = byte(0x04)
+	opcodeChunkIndex    = byte(0x08)
+	opcodeAttach        = byte(0x09)
+	opcodeStatistics    = byte(0x0A)
+	opcodeMetadata      = byte(0x0C)
+	opcodeDataEnd       = byte(0x0F)
+	opcodeSummaryOffset = byte(0x0E)
 )
 
 func ReadMagic(r io.Reader) error {
