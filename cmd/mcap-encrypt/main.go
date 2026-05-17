@@ -24,6 +24,7 @@ Usage:
   mcap-encrypt keygen  --out <basename>
   mcap-encrypt encrypt --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
   mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap> <output.mcap>
+  mcap-encrypt rotate  --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
   mcap-encrypt bridge  --key <priv.pem> [--addr <host:port>] <encrypted.mcap>
 
 Commands:
@@ -38,6 +39,12 @@ Commands:
   decrypt  Decrypt an encrypted MCAP file using the private key.
            Supports RSA and X25519 private keys.
            Outputs a standard, fully-indexed MCAP file.
+           Press Ctrl-Z to pause, fg to resume.
+
+  rotate   Re-wrap the symmetric key for a new set of recipients without decrypting
+           any chunk data. O(file size) I/O with zero message decryption.
+           --old-key: the private key that can currently decrypt the file.
+           --new-key: one or more public keys for the new recipient set (repeatable).
            Press Ctrl-Z to pause, fg to resume.
 
   bridge   Start a Foxglove WebSocket bridge for an encrypted MCAP file.
@@ -61,6 +68,8 @@ func main() {
 		runEncrypt(os.Args[2:])
 	case "decrypt":
 		runDecrypt(os.Args[2:])
+	case "rotate":
+		runRotate(os.Args[2:])
 	case "bridge":
 		runBridge(os.Args[2:])
 	default:
@@ -354,6 +363,62 @@ func runDecrypt(args []string) {
 		progressBytes.Store(n)
 	})
 	close(stop)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		os.Remove(output)
+		fatal(err)
+	}
+	fmt.Printf("done  %.2fs%s\n", elapsed.Seconds(), formatThroughput(output, elapsed))
+}
+
+func runRotate(args []string) {
+	fs := flag.NewFlagSet("rotate", flag.ExitOnError)
+	oldKey := fs.String("old-key", "", "path to the current private key (.priv.pem) that can decrypt the file")
+	var newKeys stringList
+	fs.Var(&newKeys, "new-key", "path to a new recipient public key (.pub.pem); repeat for multiple recipients")
+	force := fs.Bool("force", false, "overwrite output file if it exists")
+	_ = fs.Parse(args)
+
+	if *oldKey == "" {
+		fatal(fmt.Errorf("--old-key is required"))
+	}
+	if len(newKeys) == 0 {
+		fatal(fmt.Errorf("--new-key is required (at least one)"))
+	}
+	if fs.NArg() != 2 {
+		fatal(fmt.Errorf("usage: rotate --old-key <priv.pem> --new-key <pub.pem> <input.mcap> <output.mcap>"))
+	}
+	input, output := fs.Arg(0), fs.Arg(1)
+
+	oldPrivPEM, err := os.ReadFile(*oldKey)
+	if err != nil {
+		fatal(fmt.Errorf("read old private key: %w", err))
+	}
+
+	newPubPEMs := make([]string, len(newKeys))
+	for i, path := range newKeys {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			fatal(fmt.Errorf("read new public key %d (%s): %w", i+1, path, readErr))
+		}
+		newPubPEMs[i] = string(data)
+	}
+
+	if *force {
+		os.Remove(output)
+	} else if _, statErr := os.Stat(output); statErr == nil {
+		fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
+	}
+
+	recipientNote := ""
+	if len(newKeys) > 1 {
+		recipientNote = fmt.Sprintf(" (%d new recipients)", len(newKeys))
+	}
+	fmt.Printf("rotating keys%s: %s\n", recipientNote, input)
+
+	start := time.Now()
+	err = mcapencrypt.RotateKeyFile(input, output, string(oldPrivPEM), newPubPEMs)
 	elapsed := time.Since(start)
 
 	if err != nil {
