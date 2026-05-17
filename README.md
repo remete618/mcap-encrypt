@@ -181,7 +181,7 @@ X25519 elliptic-curve Diffie-Hellman offers 128-bit security with 32-byte keys, 
 
 ### Test coverage
 
-The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 6 automated interop tests (RSA and X25519 in both directions, with and without attachments) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation.
+The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 6 automated interop tests (RSA and X25519 in both directions, with and without attachments) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation. Key rotation is covered by round-trip, multi-recipient, wrong-key rejection, and atomic-write tests in both Go and TypeScript. The warn callback is verified to fire on malformed key attachment slots and to stay silent on clean decrypts. Current count: **72 Go unit tests**, **69 TypeScript unit tests**, 4 fuzz targets, 6 interop tests.
 
 ### Audit status
 
@@ -248,6 +248,7 @@ Requires Node.js 18+ (uses the built-in Web Crypto API). Works in modern browser
 mcap-encrypt keygen  --out <basename>
 mcap-encrypt encrypt --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
 mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap> <output.mcap>
+mcap-encrypt rotate  --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
 mcap-encrypt bridge  --key <priv.pem> [--addr <host:port>] <encrypted.mcap>
 ```
 
@@ -296,6 +297,24 @@ While running, the CLI shows the same live progress bar as encrypt. Press **Ctrl
 | `--key <priv.pem>` | Path to RSA-4096 or X25519 private key. Required. |
 | `--force` | Overwrite output file if it exists. |
 
+### rotate
+
+Changes the recipient keys of an encrypted MCAP without decrypting any chunk data. The symmetric key is unwrapped with the old private key and re-wrapped for each new public key. All `EncryptedChunk` and `EncryptedAttachment` records are copied verbatim. O(file size) I/O with zero message decryption.
+
+```bash
+mcap-encrypt rotate --old-key old.priv.pem --new-key new.pub.pem encrypted.mcap rotated.mcap
+# old.priv.pem can no longer decrypt rotated.mcap; new.pub.pem's private key can.
+
+# Rotate to multiple new recipients at once:
+mcap-encrypt rotate --old-key old.priv.pem --new-key alice.pub.pem --new-key bob.pub.pem enc.mcap rotated.mcap
+```
+
+| Flag | Description |
+|---|---|
+| `--old-key <priv.pem>` | Path to the current RSA-4096 or X25519 private key. Required. |
+| `--new-key <pub.pem>` | Path to a new RSA-4096 or X25519 public key. Repeatable. Required. |
+| `--force` | Overwrite output file if it exists. |
+
 ### bridge
 
 Decrypts an encrypted MCAP file, loads all messages into memory, then serves them over the [Foxglove WebSocket protocol](https://github.com/foxglove/ws-protocol). Foxglove Studio connects to the bridge exactly as it connects to a live ROS 2 robot running `foxglove-bridge`: same protocol, same Studio UI, same workflow. A temporary file is written during loading and removed immediately; no persistent decrypted file remains on disk.
@@ -341,6 +360,14 @@ if err := mcapencrypt.EncryptMulti("input.mcap", "encrypted.mcap", []string{
 // Decrypt: produces a standard indexed MCAP
 if err := mcapencrypt.Decrypt("encrypted.mcap", "output.mcap", "mykey.priv.pem"); err != nil { ... }
 
+// Decrypt with a warning callback for non-fatal parse issues
+err := mcapencrypt.DecryptWithOptions(r, w, "mykey.priv.pem", mcapencrypt.DecryptOptions{
+    WarnFunc: func(msg string) { log.Println("warn:", msg) },
+})
+
+// Rotate keys without re-encrypting chunk data
+if err := mcapencrypt.RotateKeyFile("encrypted.mcap", "rotated.mcap", "old.priv.pem", []string{"new.pub.pem"}); err != nil { ... }
+
 // Bridge: load state once, serve many connections
 state, err := mcapencrypt.LoadBridgeState("encrypted.mcap", "mykey.priv.pem")
 if err != nil { ... }
@@ -354,8 +381,10 @@ if err := mcapencrypt.ServeBridge(ctx, state, "localhost:8765"); err != nil { ..
 - `Encrypt` is a convenience wrapper for `EncryptMulti` with a single key.
 - `EncryptMulti` wraps the same symmetric key for each public key in the list. The file can be decrypted with any of the corresponding private keys. RSA and X25519 recipients can be mixed.
 - `Decrypt` takes an encrypted MCAP and writes a standard indexed MCAP with zstd-compressed chunks. It tries all wrapped-key attachments and succeeds when one matches the provided private key.
+- `DecryptWithOptions` accepts a `DecryptOptions{WarnFunc: func(string)}` that is called for non-fatal issues (e.g. a malformed wrapped-key attachment slot). Silent by default; fully backward compatible with `Decrypt`.
+- `RotateKeys`/`RotateKeyFile` change recipients without touching chunk ciphertext. The original `file_id` is preserved so all existing AEAD authenticators remain valid.
 - `LoadBridgeState` decrypts the file into memory. `ServeBridge` starts the WebSocket server. Separating the two lets you show progress during the load phase before the server is announced.
-- If `Encrypt`, `EncryptMulti`, or `Decrypt` fails partway, the output file is automatically removed.
+- If `Encrypt`, `EncryptMulti`, `Decrypt`, or `RotateKeyFile` fails partway, the output file is automatically removed.
 
 ---
 
@@ -395,7 +424,8 @@ for await (const { schema, channel, message } of iterateMessages(enc, privateKey
 | `generateKeyPair` | `() => Promise<KeyPair>` | Generates RSA-4096 key pair, returns PEM strings. |
 | `generateX25519KeyPair` | `() => Promise<X25519KeyPair>` | Generates X25519 key pair, returns PEM strings. |
 | `encryptMcap` | `(input: Uint8Array, pubKeyPem: string \| string[]) => Promise<Uint8Array>` | Encrypts a chunked MCAP in memory. Accepts RSA and X25519 public keys; mixed arrays are supported. |
-| `decryptMcap` | `(input: Uint8Array, privKeyPem: string) => Promise<Uint8Array>` | Decrypts to a fully-indexed MCAP buffer with ChunkIndex and summary section. Accepts RSA and X25519 private keys. |
+| `decryptMcap` | `(input: Uint8Array, privKeyPem: string, onWarn?: (msg: string) => void) => Promise<Uint8Array>` | Decrypts to a fully-indexed MCAP buffer. Optional `onWarn` called for non-fatal parse issues. |
+| `rotateMcapKeys` | `(input: Uint8Array, oldPrivKeyPem: string, newPubKeyPems: string \| string[]) => Promise<Uint8Array>` | Re-wraps the symmetric key for new recipients without decrypting chunk data. |
 | `iterateMessages` | `(input: Uint8Array, privKeyPem: string) => AsyncGenerator<{schema, channel, message}>` | Streams decrypted messages without materializing output. |
 
 **Browser compatibility:** Uses the Web Crypto API and `fzstd` (pure-TypeScript zstd). No WASM, no Node-specific APIs. Works in Chromium 89+, Firefox 90+, Safari 15+.

@@ -107,7 +107,7 @@ This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256
 
 All tests run on every CI push (`go test -race -count=1 ./...`).
 
-### Go: 65 unit tests, 4 fuzz targets
+### Go: 72 unit tests, 4 fuzz targets
 
 **Round-trip:**
 - RSA-4096-OAEP-SHA-256 key wrapping and unwrapping
@@ -153,15 +153,27 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 - Private key material zeroed after use (RSA and X25519)
 - Metadata passthrough, header profile preserved
 
+**Key rotation:**
+- Round-trip: encrypt with key A, rotate to key B, decrypt with key B — messages match original
+- Old key cannot decrypt after rotation (unless it was also listed as a new recipient)
+- Multi-recipient rotation: both new keys decrypt and yield identical messages
+- Non-encrypted MCAP input rejected with a clear error
+- `RotateKeyFile` leaves no temp file on failure (atomic write)
+- TypeScript: same coverage plus X25519-to-X25519 rotation round-trip
+
+**Warn callback:**
+- `DecryptWithOptions` WarnFunc fires on a malformed wrapped-key attachment slot; decrypt still succeeds when an uncorrupted slot is present
+- WarnFunc is not called on a clean, well-formed decrypt (Go and TypeScript)
+
 **Fuzz targets:**
 - `FuzzDecodeEncryptedChunk`
 - `FuzzDecodeEncryptedAttachment`
 - `FuzzDecodeWrappedKeyData`
 - `FuzzStreamDecrypt` (found INT-2025-001, INT-2025-002, INT-2025-003)
 
-### TypeScript: 59 unit tests
+### TypeScript: 69 unit tests
 
-Covers RSA-4096 and X25519 key wrapping, KDF test vector (HKDF-SHA-256 output anchored against the Go reference), full AAD field tamper parity with Go (chunkAAD unit tests + end-to-end splice tests for all mutable fields + fileId tamper + chunk reordering), encrypted attachment round-trip and tamper rejection, and format compatibility with the Go implementation.
+Covers RSA-4096 and X25519 key wrapping, KDF test vector (HKDF-SHA-256 output anchored against the Go reference), full AAD field tamper parity with Go (chunkAAD unit tests + end-to-end splice tests for all mutable fields + fileId tamper + chunk reordering), encrypted attachment round-trip and tamper rejection, key rotation (round-trip, old key rejected, multi-recipient, non-encrypted rejection, X25519 rotation), warn callback (fires on malformed slot, silent on clean decrypt), and format compatibility with the Go implementation.
 
 ### Cross-language interop: 6 tests
 
