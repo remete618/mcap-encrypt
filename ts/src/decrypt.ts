@@ -91,10 +91,15 @@ function parseInnerRecords(decompressed: Uint8Array): Message[] {
   return msgs;
 }
 
+// MAX_CHUNK_BYTES is the target uncompressed size for each output chunk.
+// Splitting at 4 MB prevents a single giant chunk in large files and keeps
+// random-access seek granularity reasonable for MCAP readers.
+const MAX_CHUNK_BYTES = 4 * 1024 * 1024;
+
 // buildIndexedMcap produces a fully-indexed, seekable MCAP file from the given
-// schemas, channels, messages, and plaintext attachments. All messages are placed
-// in a single uncompressed chunk followed by MessageIndex records, then a complete
-// summary section with ChunkIndex, Statistics, and SummaryOffset records.
+// schemas, channels, messages, and plaintext attachments. Messages are split
+// into ~4 MB uncompressed chunks, each followed by MessageIndex records, then
+// a complete summary section with ChunkIndex, Statistics, and SummaryOffset.
 function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Message[], attachments: Uint8Array[] = [], metadataRecs: Metadata[] = [], profile = "", library = "mcap-encrypt"): Uint8Array {
   const parts: Uint8Array[] = [];
   let pos = 0n;
@@ -104,8 +109,6 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
     pos += BigInt(data.length);
   };
 
-  // Emits a complete MCAP record (opcode + uint64 length + data) and returns
-  // the file offset of the opcode byte.
   const emitRecord = (opcode: number, data: Uint8Array): bigint => {
     const startPos = pos;
     const hdr = new Uint8Array(9);
@@ -122,70 +125,90 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
     return b.toUint8Array();
   };
 
-  // Magic
   emit(MCAP_MAGIC.slice());
-
-  // Header
   emitRecord(OP_HEADER, w((b) => { b.writeString(profile); b.writeString(library); }));
-
-  // Data section: schemas and channels
   for (const s of schemas) emitRecord(OP_SCHEMA, encodeSchema(s));
   for (const c of channels) emitRecord(OP_CHANNEL, encodeChannel(c));
 
-  // Build chunk body: all message records laid out sequentially, uncompressed.
-  const chunkBody = new BinaryWriter();
-  // msgIndexEntries maps channelId → list of {logTime, offset-within-chunk-body}
-  const msgIndexEntries = new Map<number, Array<{ logTime: bigint; offset: bigint }>>();
+  // Split messages into ~MAX_CHUNK_BYTES groups and emit one Chunk + MessageIndex set each.
+  type ChunkMeta = {
+    startOffset: bigint;
+    totalLength: bigint;
+    msgStart: bigint;
+    msgEnd: bigint;
+    uncompressedSize: bigint;
+    messageIndexOffsets: Map<number, bigint>;
+    messageIndexTotalLength: bigint;
+  };
+  const chunkMetas: ChunkMeta[] = [];
 
-  let chunkMsgStart = 18446744073709551615n; // u64 max
-  let chunkMsgEnd = 0n;
+  // channel_message_counts across all chunks
+  const globalMsgCounts = new Map<number, bigint>();
 
+  let globalMsgStart = 18446744073709551615n;
+  let globalMsgEnd = 0n;
+
+  // Group messages into chunks by accumulated uncompressed byte size.
+  const groups: Message[][] = [];
+  let current: Message[] = [];
+  let currentBytes = 0;
   for (const msg of messages) {
-    const offsetWithinChunk = BigInt(chunkBody.length);
-    if (!msgIndexEntries.has(msg.channelId)) msgIndexEntries.set(msg.channelId, []);
-    msgIndexEntries.get(msg.channelId)!.push({ logTime: msg.logTime, offset: offsetWithinChunk });
-
-    if (msg.logTime < chunkMsgStart) chunkMsgStart = msg.logTime;
-    if (msg.logTime > chunkMsgEnd) chunkMsgEnd = msg.logTime;
-
-    const msgData = encodeMessage(msg);
-    const recHdr = new Uint8Array(9);
-    recHdr[0] = OP_MESSAGE;
-    new DataView(recHdr.buffer).setBigUint64(1, BigInt(msgData.length), true);
-    chunkBody.writeBytes(recHdr);
-    chunkBody.writeBytes(msgData);
+    const msgSize = 9 + msg.data.length + 2 + 8 + 4; // rough: hdr + data + channelId + logTime + seq
+    if (current.length > 0 && currentBytes + msgSize > MAX_CHUNK_BYTES) {
+      groups.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(msg);
+    currentBytes += msgSize;
   }
+  if (current.length > 0) groups.push(current);
 
-  const uncompressedData = chunkBody.toUint8Array();
-  const uncompressedSize = BigInt(uncompressedData.length);
+  for (const group of groups) {
+    const chunkBody = new BinaryWriter();
+    const msgIndexEntries = new Map<number, Array<{ logTime: bigint; offset: bigint }>>();
+    let chunkMsgStart = 18446744073709551615n;
+    let chunkMsgEnd = 0n;
 
-  const hasMessages = messages.length > 0;
-  const msgStart = hasMessages ? chunkMsgStart : 0n;
-  const msgEnd = hasMessages ? chunkMsgEnd : 0n;
+    for (const msg of group) {
+      const offsetWithinChunk = BigInt(chunkBody.length);
+      if (!msgIndexEntries.has(msg.channelId)) msgIndexEntries.set(msg.channelId, []);
+      msgIndexEntries.get(msg.channelId)!.push({ logTime: msg.logTime, offset: offsetWithinChunk });
 
-  // Chunk record
-  let chunkStartOffset = 0n;
-  let chunkTotalLength = 0n;
-  let messageIndexTotalLength = 0n;
-  const messageIndexOffsets = new Map<number, bigint>();
+      if (msg.logTime < chunkMsgStart) chunkMsgStart = msg.logTime;
+      if (msg.logTime > chunkMsgEnd) chunkMsgEnd = msg.logTime;
+      if (msg.logTime < globalMsgStart) globalMsgStart = msg.logTime;
+      if (msg.logTime > globalMsgEnd) globalMsgEnd = msg.logTime;
 
-  if (hasMessages) {
-    chunkStartOffset = pos;
+      const msgData = encodeMessage(msg);
+      const recHdr = new Uint8Array(9);
+      recHdr[0] = OP_MESSAGE;
+      new DataView(recHdr.buffer).setBigUint64(1, BigInt(msgData.length), true);
+      chunkBody.writeBytes(recHdr);
+      chunkBody.writeBytes(msgData);
+
+      globalMsgCounts.set(msg.channelId, (globalMsgCounts.get(msg.channelId) ?? 0n) + 1n);
+    }
+
+    const uncompressedData = chunkBody.toUint8Array();
+    const uncompressedSize = BigInt(uncompressedData.length);
+    const chunkStartOffset = pos;
+
     emitRecord(
       OP_CHUNK,
       w((b) => {
-        b.writeUint64(msgStart);
-        b.writeUint64(msgEnd);
+        b.writeUint64(chunkMsgStart);
+        b.writeUint64(chunkMsgEnd);
         b.writeUint64(uncompressedSize);
         b.writeUint32(0); // uncompressed_crc = 0
         b.writeString(""); // no compression
-        b.writeUint64(uncompressedSize); // compressed_size = uncompressed_size
+        b.writeUint64(uncompressedSize);
         b.writeBytes(uncompressedData);
       }),
     );
-    chunkTotalLength = pos - chunkStartOffset;
+    const chunkTotalLength = pos - chunkStartOffset;
 
-    // MessageIndex records: one per channel in this chunk
+    const messageIndexOffsets = new Map<number, bigint>();
     const messageIndexStart = pos;
     for (const [channelId, records] of msgIndexEntries) {
       messageIndexOffsets.set(channelId, pos);
@@ -204,15 +227,24 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
         }),
       );
     }
-    messageIndexTotalLength = pos - messageIndexStart;
+
+    chunkMetas.push({
+      startOffset: chunkStartOffset,
+      totalLength: chunkTotalLength,
+      msgStart: chunkMsgStart,
+      msgEnd: chunkMsgEnd,
+      uncompressedSize,
+      messageIndexOffsets,
+      messageIndexTotalLength: pos - messageIndexStart,
+    });
   }
 
-  // Plaintext attachments in data section
-  for (const attRaw of attachments) {
-    emitRecord(OP_ATTACHMENT, attRaw);
-  }
+  const hasMessages = messages.length > 0;
+  const msgStart = hasMessages ? globalMsgStart : 0n;
+  const msgEnd = hasMessages ? globalMsgEnd : 0n;
 
-  // Metadata records in data section; track offsets for MetadataIndex in summary.
+  for (const attRaw of attachments) emitRecord(OP_ATTACHMENT, attRaw);
+
   const metadataIndexEntries: { offset: bigint; length: bigint; name: string }[] = [];
   for (const m of metadataRecs) {
     const mStart = pos;
@@ -220,40 +252,35 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
     metadataIndexEntries.push({ offset: mStart, length: pos - mStart, name: m.name });
   }
 
-  // DataEnd
   emitRecord(OP_DATA_END, w((b) => b.writeUint32(0)));
 
   // --- Summary section ---
   const summaryStart = pos;
 
-  // Repeat schemas in summary (so the summary section is self-contained)
   const sumSchemaStart = pos;
   for (const s of schemas) emitRecord(OP_SCHEMA, encodeSchema(s));
   const sumSchemaLength = pos - sumSchemaStart;
 
-  // Repeat channels in summary
   const sumChannelStart = pos;
   for (const c of channels) emitRecord(OP_CHANNEL, encodeChannel(c));
   const sumChannelLength = pos - sumChannelStart;
 
-  // Statistics
   const statsStart = pos;
   emitRecord(
     OP_STATISTICS,
     w((b) => {
-      b.writeUint64(BigInt(messages.length)); // message_count
-      b.writeUint16(schemas.length);          // schema_count
-      b.writeUint32(channels.length);         // channel_count
-      b.writeUint32(attachments.length);       // attachment_count
-      b.writeUint32(metadataRecs.length);     // metadata_count
-      b.writeUint32(hasMessages ? 1 : 0);    // chunk_count
-      b.writeUint64(msgStart);               // message_start_time
-      b.writeUint64(msgEnd);                 // message_end_time
-      // channel_message_counts: uint32 byte_length + (uint16 channelId + uint64 count)*
+      b.writeUint64(BigInt(messages.length));
+      b.writeUint16(schemas.length);
+      b.writeUint32(channels.length);
+      b.writeUint32(attachments.length);
+      b.writeUint32(metadataRecs.length);
+      b.writeUint32(chunkMetas.length);
+      b.writeUint64(msgStart);
+      b.writeUint64(msgEnd);
       const mapBuf = new BinaryWriter();
-      for (const [channelId, records] of msgIndexEntries) {
+      for (const [channelId, count] of globalMsgCounts) {
         mapBuf.writeUint16(channelId);
-        mapBuf.writeUint64(BigInt(records.length));
+        mapBuf.writeUint64(count);
       }
       const mapBytes = mapBuf.toUint8Array();
       b.writeUint32(mapBytes.length);
@@ -262,35 +289,32 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
   );
   const statsLength = pos - statsStart;
 
-  // ChunkIndex (one per chunk)
   const chunkIndexStart = pos;
-  if (hasMessages) {
+  for (const cm of chunkMetas) {
     emitRecord(
       OP_CHUNK_INDEX,
       w((b) => {
-        b.writeUint64(msgStart);           // message_start_time
-        b.writeUint64(msgEnd);             // message_end_time
-        b.writeUint64(chunkStartOffset);   // chunk_start_offset
-        b.writeUint64(chunkTotalLength);   // chunk_length (record header + data)
-        // message_index_offsets: uint32 byte_length + (uint16 channelId + uint64 offset)*
+        b.writeUint64(cm.msgStart);
+        b.writeUint64(cm.msgEnd);
+        b.writeUint64(cm.startOffset);
+        b.writeUint64(cm.totalLength);
         const mapBuf = new BinaryWriter();
-        for (const [channelId, offset] of messageIndexOffsets) {
+        for (const [channelId, offset] of cm.messageIndexOffsets) {
           mapBuf.writeUint16(channelId);
           mapBuf.writeUint64(offset);
         }
         const mapBytes = mapBuf.toUint8Array();
         b.writeUint32(mapBytes.length);
         b.writeBytes(mapBytes);
-        b.writeUint64(messageIndexTotalLength); // message_index_length
-        b.writeString("");                       // compression = ""
-        b.writeUint64(uncompressedSize);        // compressed_size
-        b.writeUint64(uncompressedSize);        // uncompressed_size
+        b.writeUint64(cm.messageIndexTotalLength);
+        b.writeString(""); // compression = ""
+        b.writeUint64(cm.uncompressedSize);
+        b.writeUint64(cm.uncompressedSize);
       }),
     );
   }
   const chunkIndexLength = pos - chunkIndexStart;
 
-  // MetadataIndex records (one per metadata record)
   const metaIndexStart = pos;
   for (const mi of metadataIndexEntries) {
     emitRecord(
@@ -300,7 +324,6 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
   }
   const metaIndexLength = pos - metaIndexStart;
 
-  // SummaryOffset records
   const summaryOffsetStart = pos;
   const emitSO = (opcode: number, start: bigint, length: bigint): void => {
     if (length === 0n) return;
@@ -312,20 +335,17 @@ function buildIndexedMcap(schemas: Schema[], channels: Channel[], messages: Mess
   if (hasMessages) emitSO(OP_CHUNK_INDEX, chunkIndexStart, chunkIndexLength);
   emitSO(OP_METADATA_INDEX, metaIndexStart, metaIndexLength);
 
-  // Footer
   emitRecord(
     OP_FOOTER,
     w((b) => {
       b.writeUint64(summaryStart);
       b.writeUint64(summaryOffsetStart);
-      b.writeUint32(0); // summary_crc = 0
+      b.writeUint32(0);
     }),
   );
 
-  // Trailing magic
   emit(MCAP_MAGIC.slice());
 
-  // Assemble
   const total = Number(pos);
   const out = new Uint8Array(total);
   let offset = 0;

@@ -66,7 +66,10 @@ function pemToDer(pem: string): Uint8Array<ArrayBuffer> {
 }
 
 export function derToPem(label: string, der: ArrayBuffer): string {
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(der)));
+  const arr = new Uint8Array(der);
+  let binStr = "";
+  for (let i = 0; i < arr.length; i++) binStr += String.fromCharCode(arr[i]);
+  const base64 = btoa(binStr);
   const lines = base64.match(/.{1,64}/g)!.join("\n");
   return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----\n`;
 }
