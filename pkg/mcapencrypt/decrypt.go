@@ -330,7 +330,7 @@ scan:
 
 	// v3+ files always write a manifest. Reject if it was stripped.
 	if manifestRequired && manifestPayload == nil {
-		return fmt.Errorf("manifest attachment missing: file may have been tampered with (strip attack). Re-encrypt with an older key attachment to opt out of this check.")
+		return fmt.Errorf("manifest attachment missing: file may have been tampered with (strip attack)")
 	}
 
 	// Verify the manifest when present. v2 legacy files may lack one.

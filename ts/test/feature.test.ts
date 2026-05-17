@@ -12,6 +12,8 @@ import {
   buildTestMcapWithMetadata,
   buildOversizedChunkMcap,
   buildEmptyMcap,
+  buildTestMcapWithLz4Chunk,
+  buildMultiChunkMcap,
   collectMessages,
 } from "./helpers.js";
 
@@ -102,6 +104,32 @@ describe("safeBigintToNumber guard", () => {
     await expect(encryptMcap(mcap, keys.publicKeyPem)).rejects.toThrow(
       /exceeds maximum safe integer/,
     );
+  });
+});
+
+describe("LZ4 rejection", () => {
+  it("throws on LZ4-compressed source MCAP", async () => {
+    const mcap = buildTestMcapWithLz4Chunk();
+    await expect(encryptMcap(mcap, keys.publicKeyPem)).rejects.toThrow(/LZ4/);
+  });
+});
+
+describe("multi-chunk iterateMessages", () => {
+  it("returns all messages across multiple chunks in order", async () => {
+    const { mcap: plain, messages: expected } = buildMultiChunkMcap(3, 4);
+    const enc = await encryptMcap(plain, keys.publicKeyPem);
+
+    const got: Array<{ channelId: number; sequence: number; data: Uint8Array }> = [];
+    for await (const { message } of iterateMessages(enc, keys.privateKeyPem)) {
+      got.push({ channelId: message.channelId, sequence: message.sequence, data: new Uint8Array(message.data) });
+    }
+
+    expect(got).toHaveLength(expected.length); // 3 chunks × 4 messages = 12
+    for (let i = 0; i < expected.length; i++) {
+      expect(got[i]!.channelId).toBe(expected[i]!.channelId);
+      expect(got[i]!.sequence).toBe(expected[i]!.sequence);
+      expect(got[i]!.data).toEqual(expected[i]!.data);
+    }
   });
 });
 

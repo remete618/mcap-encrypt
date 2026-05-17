@@ -70,5 +70,3 @@ func WriteRecord(w io.Writer, opcode byte, data []byte) error {
 	return nil
 }
 
-// emptyFooter is a Footer record payload with SummaryStart=0 (no summary section).
-var emptyFooter = make([]byte, 20)
