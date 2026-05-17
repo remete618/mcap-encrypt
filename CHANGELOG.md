@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+---
+
+## [0.9.0]
+
 ### Security
 - **INT-2025-001 resolved**: `ReadRecord` now returns an error instead of panicking when the 8-byte length field exceeds 4 GiB. Found by `FuzzStreamDecrypt`.
 - `writeChunkMessages`: replaced `int(length)` cast with a uint64-safe bounds check before conversion, eliminating a theoretical integer overflow on 32-bit hosts or with adversarially large length fields.
