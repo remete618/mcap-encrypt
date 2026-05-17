@@ -438,6 +438,14 @@ Encrypts a standard MCAP file. Input must be a chunked MCAP (non-chunked files a
 | `--key <pub.pem>` | Path to RSA-4096 or X25519 public key. Repeatable for multiple recipients. Required. |
 | `--force` | Overwrite output file if it exists. |
 
+While running, the CLI shows a live progress bar:
+
+```
+  |  encrypting  [=========>        ]  45%  1.4 GB / 3.2 GB  45.3 MB/s  ETA 40s
+```
+
+Press **Ctrl-Z** to pause mid-operation (the partial output file is preserved safely). Run `fg` in the shell to resume exactly where it stopped.
+
 To encrypt for multiple recipients, repeat `--key`:
 
 ```bash
@@ -459,7 +467,9 @@ mcap-encrypt encrypt \
 
 ### decrypt
 
-Decrypts an encrypted MCAP file. Produces a standard, fully-indexed MCAP readable by any MCAP-compatible tool including Foxglove Studio (open the output file directly). The CLI prints a progress spinner and reports throughput on completion.
+Decrypts an encrypted MCAP file. Produces a standard, fully-indexed MCAP readable by any MCAP-compatible tool including Foxglove Studio (open the output file directly).
+
+While running, the CLI shows the same live progress bar as encrypt (bytes read from the encrypted input vs. total input size, throughput, ETA). Press **Ctrl-Z** to pause, `fg` to resume.
 
 | Flag | Description |
 |---|---|
