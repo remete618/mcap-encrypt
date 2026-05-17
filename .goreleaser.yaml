@@ -63,11 +63,18 @@ brews:
       name: homebrew-mcap-encrypt
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
+    commit_author:
+      name: remete618
+      email: 218564757+remete618@users.noreply.github.com
+    commit_msg_template: "chore(brew): mcap-encrypt {{ .Tag }}"
     homepage: "https://github.com/remete618/mcap-encrypt"
     description: "Chunk-level encryption for MCAP robotics data files"
     license: "MIT"
     test: |
       assert_match "mcap-encrypt #{version}", shell_output("#{bin}/mcap-encrypt version")
+      system bin/"mcap-encrypt", "keygen", "--out", "tk"
+      assert_path_exists testpath/"tk.pub.pem"
+      assert_path_exists testpath/"tk.priv.pem"
     install: |
       bin.install "mcap-encrypt"
 
