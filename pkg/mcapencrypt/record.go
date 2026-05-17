@@ -69,4 +69,3 @@ func WriteRecord(w io.Writer, opcode byte, data []byte) error {
 	}
 	return nil
 }
-
