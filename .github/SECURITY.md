@@ -79,7 +79,7 @@ This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256
 
 All tests run on every CI push (`go test -race -count=1 ./...`).
 
-### Go: 45 unit tests, 3 fuzz targets
+### Go: 57 unit tests, 3 fuzz targets
 
 **Round-trip:**
 - RSA-4096-OAEP-SHA-256 key wrapping and unwrapping
