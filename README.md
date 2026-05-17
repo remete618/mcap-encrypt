@@ -3,7 +3,7 @@
 mcap-encrypt
 </h1>
 
-**Public-key encryption for MCAP robotics logs.**
+**Public-key encryption for MCAP robotics logs, built for the [Foxglove](https://foxglove.dev) platform.**
 
 **Build**  
 [![CI](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml/badge.svg)](https://github.com/remete618/mcap-encrypt/actions/workflows/ci.yml)
@@ -18,30 +18,37 @@ mcap-encrypt
 [![FOSSA Security](https://app.fossa.com/api/projects/custom%2B62363%2Fgithub.com%2Fremete618%2Fmcap-encrypt.svg?type=shield&issueType=security)](https://app.fossa.com/projects/custom%2B62363%2Fgithub.com%2Fremete618%2Fmcap-encrypt?ref=badge_shield&issueType=security)
 [![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://renovatebot.com)
 
-Robotics logs contain camera frames, lidar scans, telemetry, and customer-site data. MCAP has great tooling but no native encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while keeping schemas and channels readable for routing and inspection. No key is needed to read file structure.
+MCAP is the native data format for [Foxglove Studio](https://foxglove.dev/studio) and ROS 2. It has excellent tooling but no built-in encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while keeping schemas and channels readable for routing and inspection. No key is needed to read file structure.
 
 Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption is the harder part.
 
 📌 *Status:* v0.x · experimental · not externally audited  
-✅ *Best for:* MCAP logs at rest, schemas + channels stay readable, Foxglove Studio compatible via bridge  
+✅ *Best for:* MCAP logs at rest; full [Foxglove Studio](https://foxglove.dev/studio) visualization via bridge (same UX as a live robot); schemas + channels always readable  
 🚫 *Not for:* hiding topic names, timestamps, or attachments
 
 ---
 
 ## Table of contents
 
+**Core**
 - [What it does](#what-it-does)
-- [Foxglove Studio integration](#foxglove-studio-integration)
-- [Multi-recipient encryption](#multi-recipient-encryption)
-- [Seekable encrypted files](#seekable-encrypted-files)
-- [Alternatives](#alternatives)
-- [Security model](#security-model)
 - [Quick start](#quick-start)
+- [Security model](#security-model)
+- [Alternatives](#alternatives)
+
+**Reference**
 - [Install](#install)
 - [CLI reference](#cli-reference)
 - [Go library](#go-library)
 - [TypeScript library](#typescript-library)
 - [Cross-language compatibility](#cross-language-compatibility)
+
+**Features**
+- [Multi-recipient encryption](#multi-recipient-encryption)
+- [Foxglove Studio integration](#foxglove-studio-integration)
+- [Seekable encrypted files](#seekable-encrypted-files)
+
+**Project**
 - [Encrypted file format](#encrypted-file-format)
 - [Known limitations](#known-limitations)
 - [Contributing](#contributing)
@@ -51,7 +58,7 @@ Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption 
 
 ## What it does
 
-MCAP is the standard container format for robotics sensor data (ROS 2, Foxglove, etc.). Files can contain gigabytes of camera frames, lidar scans, and telemetry. `mcap-encrypt` adds at-rest encryption to those files without changing the outer structure.
+MCAP is the standard container format for robotics sensor data. Files can contain gigabytes of camera frames, lidar scans, and telemetry. `mcap-encrypt` adds at-rest encryption to those files without changing the outer structure.
 
 <table>
 <tr>
@@ -68,7 +75,7 @@ MCAP is the standard container format for robotics sensor data (ROS 2, Foxglove,
 </tr>
 <tr>
 <td width="160" nowrap><img src="assets/logo-H-pixel-owl-transparent.svg" width="32" align="absmiddle"> <strong>4 · Visualize</strong></td>
-<td>The <strong>bridge</strong> command decrypts to a temporary file, loads all messages into memory, removes the temp file, then serves over the Foxglove WebSocket protocol. Connect Foxglove Studio exactly as you would to a live ROS 2 robot — no persistent decrypted file remains on disk.</td>
+<td>The <strong>bridge</strong> command decrypts to a temporary file, loads all messages into memory, removes the temp file, then serves over the Foxglove WebSocket protocol. Connect Foxglove Studio exactly as you would to a live ROS 2 robot. No persistent decrypted file remains on disk.</td>
 </tr>
 </table>
 
@@ -78,216 +85,40 @@ flowchart LR
     D[Random 32-byte file key] --> B
     B --> C[EncryptedChunk opcode 0x81]
     D --> E1[RSA-4096-OAEP per RSA recipient]
-    D --> E2[X25519-HKDF-XChaCha20 per X25519 recipient]
-    E1 --> F[WrappedKey attachments — plaintext]
+    D --> E2[X25519-HKDF-XChaCha20Poly1305 per X25519 recipient]
+    E1 --> F[WrappedKey attachments, plaintext]
     E2 --> F
-    B --> I[ChunkIndex in summary — plaintext time ranges]
-    G[Schemas / Channels / Metadata] --> H[Plaintext — inspectable without key]
+    B --> I[ChunkIndex in summary, plaintext time ranges]
+    G[Schemas / Channels / Metadata] --> H[Plaintext, inspectable without key]
 ```
 
 ---
 
-## Foxglove Studio integration
-
-`mcap-encrypt` works with Foxglove Studio in the same way that `foxglove-bridge` connects a live ROS 2 robot. The `bridge` command decrypts your encrypted MCAP file, loads it into memory, then serves it over the [Foxglove WebSocket protocol](https://github.com/foxglove/ws-protocol). Your private key never leaves your machine. A temporary file is written during loading and removed immediately; no persistent decrypted file remains on disk.
-
-### How to connect
-
-**Step 1 — start the bridge:**
+## Quick start
 
 ```bash
-mcap-encrypt bridge --key analyst.priv.pem recording.mcap
+# 1. Generate a key pair
+mcap-encrypt keygen --out mykey
+# Writes mykey.priv.pem (0600 permissions, keep secret) and mykey.pub.pem
+
+# 2. Encrypt
+mcap-encrypt encrypt --key mykey.pub.pem input.mcap encrypted.mcap
+
+# 3. Decrypt to a standard MCAP file
+mcap-encrypt decrypt --key mykey.priv.pem encrypted.mcap output.mcap
+
+# 4. Visualize in Foxglove Studio without decrypting to disk
+mcap-encrypt bridge --key mykey.priv.pem encrypted.mcap
+# Connect Foxglove Studio to ws://localhost:8765
 ```
 
-Output:
-```
-loading: recording.mcap
-  /  decrypting  2.1s
-done  2.1s
-listening: ws://localhost:8765
-Open Foxglove Studio → Add connection → Foxglove WebSocket → ws://localhost:8765
-Press Ctrl-C to stop.
-```
-
-**Step 2 — open Foxglove Studio:**
-
-1. Open [Foxglove Studio](https://foxglove.dev/studio) (desktop app or web at `studio.foxglove.dev`).
-2. Click **Open data source**.
-3. Select **Foxglove WebSocket**.
-4. Enter `ws://localhost:8765`.
-5. Click **Open**.
-
-All topics, schemas, and messages from the encrypted file appear immediately. Camera feeds, lidar point clouds, plots, and diagnostics render exactly as they do with a live ROS 2 source. You can scrub the timeline, jump to specific timestamps, and use all Foxglove panels.
-
-### Comparison with foxglove-bridge
-
-| | `foxglove-bridge` (ROS 2 live) | `mcap-encrypt bridge` (encrypted file) |
-|---|---|---|
-| **Data source** | Live ROS 2 node graph | Encrypted MCAP file |
-| **Protocol** | Foxglove WebSocket v1 | Foxglove WebSocket v1 |
-| **Connect in Studio** | `ws://localhost:8765` | `ws://localhost:8765` |
-| **Key required** | No | Yes (your private key) |
-| **Decrypted file on disk** | n/a | Never |
-| **Multiple clients** | Yes | Yes (each gets own stream) |
-
-The commands are identical from Foxglove Studio's perspective. Switch between a live robot and an encrypted log by changing the WebSocket URL.
-
-### Custom address
-
-```bash
-# Listen on a specific port
-mcap-encrypt bridge --key analyst.priv.pem --addr localhost:9090 recording.mcap
-
-# Listen on all interfaces (use with a TLS reverse proxy in production)
-mcap-encrypt bridge --key analyst.priv.pem --addr 0.0.0.0:8765 recording.mcap
-```
-
-> **Security note:** By default the bridge listens only on `localhost`. The decrypted stream is unencrypted over the WebSocket connection. If you expose the bridge on a non-localhost address, put a TLS-terminating reverse proxy (nginx, Caddy) in front.
-
-### Bridge in a Go application
-
-```go
-import (
-    "context"
-    "github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
-)
-
-// Load once, serve many connections.
-state, err := mcapencrypt.LoadBridgeState("recording.mcap", "analyst.priv.pem")
-if err != nil { log.Fatal(err) }
-
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
-
-// Blocks until ctx is cancelled or the server fails.
-if err := mcapencrypt.ServeBridge(ctx, state, "localhost:8765"); err != nil {
-    log.Fatal(err)
-}
-```
-
----
-
-## Multi-recipient encryption
-
-A single encrypted MCAP file can be wrapped for multiple recipients. Each recipient holds only their own private key. The chunk ciphertext is written once and is identical for all recipients — only the key wrapping differs. This is the same model used by PGP multi-recipient encryption and S/MIME.
-
-### Any two analysts, one file
-
-```bash
-mcap-encrypt encrypt \
-  --key alice.pub.pem \
-  --key bob.pub.pem \
-  recording.mcap encrypted.mcap
-# Either alice.priv.pem or bob.priv.pem can decrypt.
-```
-
-### You + Foxglove
-
-If Foxglove publishes its own public key, you can encrypt for both yourself and Foxglove in one step. Foxglove can then decrypt and index or display the file server-side using its own private key — without ever seeing your private key, and without you uploading a plaintext file.
-
-```bash
-mcap-encrypt encrypt \
-  --key your.pub.pem \
-  --key foxglove.pub.pem \
-  recording.mcap encrypted.mcap
-```
-
-What each party can do:
-
-| | Your private key | Foxglove private key |
-|---|---|---|
-| Decrypt locally | ✅ | ✅ |
-| Visualize via bridge | ✅ | ✅ (server-side) |
-| Read plaintext MCAP | Never stored | Never stored |
-| See each other's key | ❌ | ❌ |
-
-The file is fully encrypted in transit and at rest. No party shares keys. The ciphertext is the same blob regardless of how many recipients were added.
-
-### How to add Foxglove as a recipient
-
-Include Foxglove's published public key with `--key`. Foxglove's ingest pipeline detects the matching `mcap_encryption_key` attachment, unwraps with its own private key, and indexes or serves the file normally. Files uploaded without the Foxglove key are opaque on the platform side — no messages, no content.
-
-This model requires no protocol changes. The multi-recipient format is already fully implemented.
-
----
-
-## Seekable encrypted files
-
-Encrypted MCAP files produced by `mcap-encrypt` include a full **summary section** after the data end record. This summary contains:
-
-- **Schema records** — topic message types, readable without a key
-- **Channel records** — topic names and encodings, readable without a key
-- **Statistics record** — chunk count, schema count, channel count, time range
-- **ChunkIndex records** — one per encrypted chunk, with the chunk's time range and exact file offset
-- **SummaryOffset records** — index into the summary itself
-
-The footer's `summary_start` field points at this section. Any MCAP reader that understands the summary section can seek to a specific time range in O(log n) without reading the whole file.
-
-**What this means for Foxglove Studio:**
-
-Even without decrypting, Foxglove Studio can:
-- Show the recording's total time range in the timeline scrubber
-- Display which topics are present and their message types
-- Navigate to specific timestamps by seeking to the right ChunkIndex entry
-
-When connected via the bridge, Foxglove receives the decrypted messages and renders them fully. The ChunkIndex lets the bridge serve specific time-range requests efficiently rather than scanning from the beginning.
-
-Files produced before version 4 of the format (no summary section) are still decryptable; the bridge and decrypt command fall back to a linear scan. Re-encrypt to upgrade.
-
----
-
-## Alternatives
-
-<table>
-<thead>
-<tr>
-<th align="left">Approach</th>
-<th align="center">🔍 MCAP-inspectable<br>after encrypt</th>
-<th align="center">⚡ Per-chunk<br>stream</th>
-<th align="center">🔑 Multi-recipient<br>public-key</th>
-<th align="center">📦 MCAP-<br>native</th>
-<th align="center">🦊 Foxglove<br>Studio</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>gpg</code> / <code>age</code> (full-file)</td>
-<td align="center">❌ no</td>
-<td align="center">❌ no</td>
-<td align="center">✅ yes <em>(age)</em></td>
-<td align="center">❌ no</td>
-<td align="center">❌ no</td>
-</tr>
-<tr>
-<td>Storage-layer <em>(dm-crypt, S3 SSE)</em></td>
-<td align="center">✅ yes <em>(mounted)</em></td>
-<td align="center">❌ no</td>
-<td align="center">❌ no</td>
-<td align="center">❌ no</td>
-<td align="center">✅ yes <em>(mounted)</em></td>
-</tr>
-<tr>
-<td>ROS 1 bag (AES-CBC / GPG)</td>
-<td align="center">❌ no</td>
-<td align="center">❌ no</td>
-<td align="center">❌ no</td>
-<td align="center">❌ no</td>
-<td align="center">❌ no</td>
-</tr>
-<tr>
-<td><strong>► mcap-encrypt</strong></td>
-<td align="center"><strong>✅ partial</strong><br><small>schemas + channels + timeline</small></td>
-<td align="center"><strong>✅ yes</strong></td>
-<td align="center"><strong>✅ yes</strong></td>
-<td align="center"><strong>✅ yes</strong></td>
-<td align="center"><strong>✅ yes</strong><br><small>via bridge</small></td>
-</tr>
-</tbody>
-</table>
+If the output file already exists, `encrypt` and `decrypt` fail with an error. Pass `--force` to overwrite.
 
 ---
 
 ## Security model
+
+**Threat model:** `mcap-encrypt` assumes an adversary with full read access to encrypted files but without the recipient's private key. It does not protect against an adversary with access to process memory, the decryption machine, or the private key files.
 
 `mcap-encrypt` encrypts MCAP chunk payloads. It does not encrypt the outer MCAP structure.
 
@@ -295,18 +126,18 @@ Files produced before version 4 of the format (no summary section) are still dec
 |---|---|---|
 | Chunk encryption | XChaCha20-Poly1305 | Authenticated encryption for chunk record payloads |
 | Key wrapping (RSA) | RSA-4096-OAEP-SHA-256 | Wraps the per-file symmetric key for RSA recipients |
-| Key wrapping (X25519) | X25519-HKDF-XChaCha20Poly1305 | Wraps the per-file symmetric key for X25519 recipients |
+| Key wrapping (X25519) | X25519-HKDF-SHA256-XChaCha20Poly1305 | Wraps the per-file symmetric key for X25519 recipients; HKDF salt: none; info: `"mcap-encrypt x25519 v1"` |
 | Integrity binding | AEAD additional data (AAD) | Binds each encrypted chunk to its file, position, timing, compression, and size metadata |
-| Truncation detection | HMAC-SHA-256 manifest | Detects tail truncation or chunk padding |
+| Truncation detection | HMAC-SHA-256 manifest | Detects tail truncation and strip attacks; required on all v3 files |
 
 ### What is protected
 
 - Message payloads inside MCAP chunks.
 - Tampering with encrypted chunk ciphertext or the 16-byte Poly1305 authentication tag.
 - Tampering with AAD-covered plaintext fields: `file_id`, `chunk_index`, `slot_id`, `compression`, `uncompressed_size`, `uncompressed_crc`, `message_start_time`, and `message_end_time`. Any modification fails authentication.
-- Chunk swapping across files, because `file_id` (a 16-byte random value, same for all recipients of a given file) is bound in the AAD.
-- Chunk reordering within a file, because `chunk_index` (zero-based position) is bound in the AAD.
-- Tail truncation and chunk padding, via the HMAC-SHA-256 manifest attachment (present in all files produced by this library).
+- Chunk swapping across files: `file_id` (a 16-byte random value, same for all recipients of a given file) is bound in the AAD.
+- Chunk reordering within a file: `chunk_index` (zero-based position) is bound in the AAD.
+- Tail truncation and manifest strip attacks: the HMAC-SHA-256 manifest attachment is required on all v3 files. Decrypting a v3 file with the manifest removed fails with an explicit error.
 
 ### What is not protected
 
@@ -318,6 +149,7 @@ The following remain in plaintext and are readable without a key:
 | Channel records, including topic names | Preserved for inspection and routing |
 | Message start/end times per chunk | Preserved for timeline indexing |
 | Compression algorithm and approximate chunk size | Stored as plaintext encrypted-chunk metadata |
+| Ciphertext length | Chunks are not padded; approximate payload size is inferrable from ciphertext length |
 | Non-key attachments | Passed through unchanged |
 | Metadata records | Passed through unchanged |
 | Recipient key fingerprints | Stored in wrapped-key attachments |
@@ -330,23 +162,25 @@ If any of these fields are sensitive, strip or transform them before encryption,
 - Each encrypted chunk gets a fresh random 24-byte XChaCha20-Poly1305 nonce. Nonce reuse is not possible.
 - The symmetric key is wrapped once per recipient (RSA-OAEP-SHA-256 or X25519-HKDF-XChaCha20Poly1305) and stored as plaintext attachments before the first chunk.
 - Encrypted MCAP files do not contain private keys.
-- `mcap-encrypt keygen` writes `<basename>.priv.pem` to disk with `0600` permissions. Keep it secret.
+- `mcap-encrypt keygen` writes `<basename>.priv.pem` to disk with `0600` permissions.
 
 ### Algorithm rationale
 
-The library deliberately uses stronger primitives than the minimum viable options. Here is the reasoning behind each choice.
-
 **XChaCha20-Poly1305 (not AES-GCM, not ChaCha20-Poly1305)**
 
-The standard 12-byte nonce of AES-GCM and ChaCha20-Poly1305 creates a practical nonce-reuse risk when nonces are generated randomly at scale: with 2^32 chunks, collision probability exceeds 50%. A nonce reuse under AEAD is catastrophic — it leaks the XOR of plaintexts and the authentication key. XChaCha20's 24-byte nonce raises that ceiling to 2^96, making random nonce generation safe for any realistic deployment. AES-GCM is faster on x86 with AES-NI hardware acceleration, but robotics compute (Jetson Orin, ARM Cortex-A series) often lacks AES-NI. XChaCha20-Poly1305 performs consistently across all architectures. It is also the cipher used by WireGuard and Signal and carries no patent encumbrances.
+The standard 12-byte nonce of AES-GCM and ChaCha20-Poly1305 creates a practical nonce-reuse risk when nonces are generated randomly at scale: with 2^32 chunks, collision probability exceeds 50%. A nonce reuse under AEAD is catastrophic, leaking the XOR of plaintexts and the authentication key. XChaCha20's 24-byte nonce raises that ceiling to 2^96, making random nonce generation safe for any realistic deployment. AES-GCM is faster on x86 with AES-NI hardware acceleration, but robotics compute (Jetson Orin, ARM Cortex-A series) often lacks AES-NI. XChaCha20-Poly1305 performs consistently across all architectures. It is also the cipher used by WireGuard and Signal and carries no patent encumbrances.
 
 **RSA-4096 (not RSA-2048)**
 
-RSA-2048 provides approximately 112 bits of security (NIST SP 800-57 estimate). NIST recommends RSA-2048 only through 2030 for new systems and recommends ≥3072 bits beyond that. Robotics log archives are long-lived: crash investigation records, regulatory data, and ML training datasets are routinely retained for 5–20 years. The key wrapping must remain secure for the lifetime of the data, not just the recording session. RSA-4096 provides approximately 140 bits of security and aligns with long-term NIST guidance. The performance penalty is negligible: key wrapping is a one-time operation per file, taking milliseconds regardless of file size. The ciphertext overhead increases by 256 bytes per recipient (512 vs 256 bytes), which is immaterial for files that are megabytes to gigabytes in size.
+RSA-2048 provides approximately 112 bits of security (NIST SP 800-57 estimate). NIST recommends RSA-2048 only through 2030 for new systems and recommends at least 3072 bits beyond that. Robotics log archives are long-lived: crash investigation records, regulatory data, and ML training datasets are routinely retained for 5-20 years. The key wrapping must remain secure for the lifetime of the data, not just the recording session. RSA-4096 provides approximately 140 bits of security and aligns with long-term NIST guidance. The performance penalty is negligible: key wrapping is a one-time operation per file, taking milliseconds regardless of file size.
 
 **X25519 as an alternative to RSA**
 
 X25519 elliptic-curve Diffie-Hellman offers 128-bit security with 32-byte keys, orders of magnitude faster key generation than RSA-4096, and a wrapped key output of only 104 bytes. For resource-constrained embedded hardware or high-throughput fleet deployments where key generation speed matters, X25519 is the right choice. Mixed-algorithm recipient lists are supported: the same file can be wrapped for both an RSA-4096 recipient and an X25519 recipient simultaneously. X25519 is used in TLS 1.3, the Signal Protocol, and WireGuard, and is standardized in RFC 7748.
+
+### Test coverage
+
+The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, and manifest strip attacks. Three fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by automated interop tests (Go encrypts, TypeScript decrypts; TypeScript encrypts, Go decrypts) run on every CI push.
 
 ### Audit status
 
@@ -354,25 +188,14 @@ This project has not been externally audited. Do not use it as the only protecti
 
 ---
 
-## Quick start
+## Alternatives
 
-```bash
-# 1. Generate a key pair
-mcap-encrypt keygen --out mykey
-# Writes mykey.priv.pem (keep secret) and mykey.pub.pem
-
-# 2. Encrypt
-mcap-encrypt encrypt --key mykey.pub.pem input.mcap encrypted.mcap
-
-# 3. Decrypt to a standard MCAP file
-mcap-encrypt decrypt --key mykey.priv.pem encrypted.mcap output.mcap
-
-# 4. Visualize in Foxglove Studio without decrypting to disk
-mcap-encrypt bridge --key mykey.priv.pem encrypted.mcap
-# → Connect Foxglove Studio to ws://localhost:8765
-```
-
-If the output file already exists, `encrypt` and `decrypt` fail with an error. Pass `--force` to overwrite.
+| Approach | MCAP-inspectable after encrypt | Per-chunk stream | Multi-recipient public-key | MCAP-native | 🦊 Foxglove Studio ready |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `gpg` / `age` (full-file) | ✗ | ✗ | ✅ *(age)* | ✗ | ✗ |
+| Storage-layer *(dm-crypt, S3 SSE)* | ✅ *(mounted)* | ✗ | ✗ | ✗ | ✅ *(mounted)* |
+| ROS 1 bag (AES-CBC / GPG) | ✗ | ✗ | ✗ | ✗ | ✗ |
+| **mcap-encrypt** | **✅ partial** schemas + channels + timeline | **✅** | **✅** | **✅** | **✅** via bridge |
 
 ---
 
@@ -453,23 +276,11 @@ mcap-encrypt encrypt --key alice.pub.pem --key bob.pub.pem input.mcap encrypted.
 # Either alice.priv.pem or bob.priv.pem can decrypt the result.
 ```
 
-To allow Foxglove to read the file alongside you, add Foxglove's public key:
-
-```bash
-mcap-encrypt encrypt \
-  --key your.pub.pem \
-  --key foxglove.pub.pem \
-  recording.mcap encrypted.mcap
-# You decrypt with your.priv.pem.
-# Foxglove decrypts with its own key.
-# Neither key is shared. The ciphertext is identical for both recipients.
-```
-
 ### decrypt
 
 Decrypts an encrypted MCAP file. Produces a standard, fully-indexed MCAP readable by any MCAP-compatible tool including Foxglove Studio (open the output file directly).
 
-While running, the CLI shows the same live progress bar as encrypt (bytes read from the encrypted input vs. total input size, throughput, ETA). Press **Ctrl-Z** to pause, `fg` to resume.
+While running, the CLI shows the same live progress bar as encrypt. Press **Ctrl-Z** to pause, `fg` to resume.
 
 | Flag | Description |
 |---|---|
@@ -478,7 +289,7 @@ While running, the CLI shows the same live progress bar as encrypt (bytes read f
 
 ### bridge
 
-Decrypts an encrypted MCAP file, loads all messages into memory, then serves them over the [Foxglove WebSocket protocol](https://github.com/foxglove/ws-protocol). Foxglove Studio connects to the bridge exactly as it connects to a live ROS 2 robot running `foxglove-bridge` — same protocol, same Studio UI, same workflow. A temporary file is written during loading and removed immediately; no persistent decrypted file remains on disk.
+Decrypts an encrypted MCAP file, loads all messages into memory, then serves them over the [Foxglove WebSocket protocol](https://github.com/foxglove/ws-protocol). Foxglove Studio connects to the bridge exactly as it connects to a live ROS 2 robot running `foxglove-bridge`: same protocol, same Studio UI, same workflow. A temporary file is written during loading and removed immediately; no persistent decrypted file remains on disk.
 
 ```bash
 mcap-encrypt bridge --key analyst.priv.pem recording.mcap
@@ -505,7 +316,7 @@ mcap-encrypt bridge --key analyst.priv.pem recording.mcap
 import "github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
 
 // Generate key pairs
-if err := mcapencrypt.GenerateKeyPair("mykey"); err != nil { ... }         // RSA-4096
+if err := mcapencrypt.GenerateKeyPair("mykey"); err != nil { ... }              // RSA-4096
 if err := mcapencrypt.GenerateX25519KeyPair("mykey-x25519"); err != nil { ... } // X25519
 
 // Encrypt for a single recipient
@@ -515,7 +326,7 @@ if err := mcapencrypt.Encrypt("input.mcap", "encrypted.mcap", "mykey.pub.pem"); 
 if err := mcapencrypt.EncryptMulti("input.mcap", "encrypted.mcap", []string{
     "alice.pub.pem",
     "bob.pub.pem",
-    "foxglove.pub.pem", // optional: Foxglove can also decrypt server-side
+    "foxglove.pub.pem", // Foxglove can decrypt server-side once integration is live
 }); err != nil { ... }
 
 // Decrypt: produces a standard indexed MCAP
@@ -587,7 +398,7 @@ Keys and encrypted files produced by the Go CLI are fully compatible with the Ty
 ```bash
 # Go encrypts, TypeScript decrypts
 mcap-encrypt encrypt --key mykey.pub.pem input.mcap enc.mcap
-# → decryptMcap(readFileSync("enc.mcap"), privKeyPem) works
+# decryptMcap(readFileSync("enc.mcap"), privKeyPem) works
 
 # TypeScript encrypts, Go decrypts
 # encryptMcap(data, pubKeyPem) → write to ts-enc.mcap
@@ -604,15 +415,156 @@ Both implementations agree on:
 
 **Key wrapping scope:** The TypeScript library supports **RSA recipients only**. X25519 key wrapping and unwrapping is Go-only. A file encrypted with an X25519 public key cannot be decrypted by the TypeScript library. Use the Go CLI when X25519 recipients are involved.
 
-Cross-language compatibility is verified by automated interop tests in CI.
+Cross-language compatibility is verified by automated interop tests run on every CI push.
 
 **Compression note:** The Go library automatically re-compresses LZ4 chunks to zstd during encryption, so any source MCAP is safe to pass to `mcap-encrypt encrypt`. The TypeScript library does **not** support LZ4 input; `encryptMcap()` throws a clear error if the source contains LZ4 chunks. Use the Go CLI to normalize those files first.
 
 ---
 
+## Multi-recipient encryption
+
+A single encrypted MCAP file can be wrapped for multiple recipients. Each recipient holds only their own private key. The chunk ciphertext is written once and is identical for all recipients; only the key wrapping differs. This is the same model used by PGP multi-recipient encryption and S/MIME.
+
+### Any two analysts, one file
+
+```bash
+mcap-encrypt encrypt \
+  --key alice.pub.pem \
+  --key bob.pub.pem \
+  recording.mcap encrypted.mcap
+# Either alice.priv.pem or bob.priv.pem can decrypt.
+```
+
+### You + Foxglove
+
+This use case is designed into the format and the library supports it today. What it requires from Foxglove is a one-time integration: publish an RSA-4096 public key at a stable URL, and wire up a short ingest path using `iterateMessages()` from the npm package. No protocol changes, no special upload flow, no plaintext file ever uploaded.
+
+Once that integration is live, adding Foxglove as a recipient is a single extra `--key` flag at encrypt time:
+
+```bash
+mcap-encrypt encrypt \
+  --key your.pub.pem \
+  --key foxglove.pub.pem \
+  recording.mcap encrypted.mcap
+# You decrypt with your.priv.pem.
+# Foxglove decrypts on ingest with its own key.
+# The ciphertext is identical for both recipients.
+```
+
+What each party can do:
+
+| | Your private key | Foxglove private key |
+|---|---|---|
+| Decrypt locally | ✅ | ✅ |
+| Visualize via bridge | ✅ | ✅ (server-side) |
+| Read plaintext MCAP | Never stored | Never stored |
+| See each other's key | ✗ | ✗ |
+
+The file is fully encrypted in transit and at rest. No party shares keys. The ciphertext is the same blob regardless of how many recipients were added.
+
+---
+
+## Foxglove Studio integration
+
+`mcap-encrypt` works with [Foxglove Studio](https://foxglove.dev/studio) in the same way that `foxglove-bridge` connects a live ROS 2 robot. The `bridge` command decrypts your encrypted MCAP file, loads it into memory, then serves it over the [Foxglove WebSocket protocol](https://github.com/foxglove/ws-protocol). This makes encrypted MCAP files a first-class data source in Foxglove Studio, indistinguishable from a live robot connection. Your private key never leaves your machine. No persistent decrypted file remains on disk.
+
+### How to connect
+
+**Step 1: start the bridge**
+
+```bash
+mcap-encrypt bridge --key analyst.priv.pem recording.mcap
+```
+
+Output:
+```
+loading: recording.mcap
+  /  decrypting  2.1s
+done  2.1s
+listening: ws://localhost:8765
+Open Foxglove Studio → Add connection → Foxglove WebSocket → ws://localhost:8765
+Press Ctrl-C to stop.
+```
+
+**Step 2: open Foxglove Studio**
+
+1. Open [Foxglove Studio](https://foxglove.dev/studio) (desktop app or web at `studio.foxglove.dev`).
+2. Click **Open data source**.
+3. Select **Foxglove WebSocket**.
+4. Enter `ws://localhost:8765`.
+5. Click **Open**.
+
+All topics, schemas, and messages from the encrypted file appear immediately. Camera feeds, lidar point clouds, plots, and diagnostics render exactly as they do with a live ROS 2 source. You can scrub the timeline, jump to specific timestamps, and use all Foxglove panels.
+
+### Comparison with foxglove-bridge
+
+| | `foxglove-bridge` (ROS 2 live) | `mcap-encrypt bridge` (encrypted file) |
+|---|---|---|
+| **Data source** | Live ROS 2 node graph | Encrypted MCAP file |
+| **Protocol** | Foxglove WebSocket v1 | Foxglove WebSocket v1 |
+| **Connect in Studio** | `ws://localhost:8765` | `ws://localhost:8765` |
+| **Key required** | No | Yes (your private key) |
+| **Decrypted file on disk** | n/a | Never |
+| **Multiple clients** | Yes | Yes (each gets own stream) |
+
+The commands are identical from Foxglove Studio's perspective. Switch between a live robot and an encrypted log by changing the WebSocket URL.
+
+### Custom address
+
+```bash
+# Listen on a specific port
+mcap-encrypt bridge --key analyst.priv.pem --addr localhost:9090 recording.mcap
+
+# Listen on all interfaces (use with a TLS reverse proxy in production)
+mcap-encrypt bridge --key analyst.priv.pem --addr 0.0.0.0:8765 recording.mcap
+```
+
+> **Security note:** By default the bridge listens only on `localhost`. The decrypted stream is unencrypted over the WebSocket connection. If you expose the bridge on a non-localhost address, put a TLS-terminating reverse proxy (nginx, Caddy) in front.
+
+### Bridge in a Go application
+
+```go
+import (
+    "context"
+    "github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
+)
+
+// Load once, serve many connections.
+state, err := mcapencrypt.LoadBridgeState("recording.mcap", "analyst.priv.pem")
+if err != nil { log.Fatal(err) }
+
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+// Blocks until ctx is cancelled or the server fails.
+if err := mcapencrypt.ServeBridge(ctx, state, "localhost:8765"); err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+## Seekable encrypted files
+
+Encrypted files produced by `mcap-encrypt` include a full **summary section** after the data end record:
+
+- **Schema records:** topic message types, readable without a key
+- **Channel records:** topic names and encodings, readable without a key
+- **Statistics record:** chunk count, schema count, channel count, time range
+- **ChunkIndex records:** one per encrypted chunk, with the chunk's time range and exact file offset
+- **SummaryOffset records:** index into the summary itself
+
+This means Foxglove Studio can open an encrypted file, show the recording timeline, and list all topics without a key. The file is opaque (no messages) until decrypted, but the outer structure is fully navigable.
+
+After running `mcap-encrypt decrypt`, the output is a standard fully-indexed MCAP that any MCAP-compatible tool can seek and open directly.
+
+See [FORMAT.md](FORMAT.md) for the complete binary specification.
+
+---
+
 ## Encrypted file format
 
-The outer file is a valid MCAP. Standard MCAP readers can open it and inspect schemas, channels, and the timeline. They will not find any messages because the `EncryptedChunk` opcode (`0x81`) is not a standard MCAP record type. The ChunkIndex records in the summary section point at these encrypted chunks, enabling time-range seeking without decryption.
+The outer file is a valid MCAP. Standard MCAP readers can open it and inspect schemas, channels, and the timeline. They will not find any messages because the `EncryptedChunk` opcode (`0x81`) is not a standard MCAP record type. The ChunkIndex records in the summary section point at these encrypted chunks, enabling time-range inspection without decryption.
 
 ```
 [magic] [Header] [Schema]* [Channel]* [WrappedKeyAttachment]+ [ManifestAttachment]
@@ -621,7 +573,7 @@ The outer file is a valid MCAP. Standard MCAP readers can open it and inspect sc
 [magic]
 ```
 
-There is one `WrappedKeyAttachment` per recipient. All wrapped copies encode the same symmetric key, wrapped separately for each public key. The `ManifestAttachment` stores the chunk count and an HMAC-SHA-256 bound to the symmetric key and file identity, enabling truncation detection on decrypt. The summary section (after DataEnd) allows O(log n) seeking by time range.
+There is one `WrappedKeyAttachment` per recipient. All wrapped copies encode the same symmetric key, wrapped separately for each public key. The `ManifestAttachment` stores the chunk count and an HMAC-SHA-256 bound to the symmetric key and file identity, enabling truncation detection on decrypt. The summary section allows inspection of the recording timeline and topics without a key.
 
 ### WrappedKeyAttachment
 
@@ -653,7 +605,7 @@ The `data` payload (all strings and byte fields use 4-byte LE length prefixes):
 | `uncompressed_size` | `uint64 LE` | Byte length of the records after decompression |
 | `uncompressed_crc` | `uint32 LE` | CRC32-IEEE of the decompressed records (0 = not checked) |
 | `compression` | `string` | Compression applied before encryption: `"zstd"` or `""` |
-| `slot_id` | `string` | Content-key slot identifier included in AAD. Currently always `"key-1"`; not the recipient fingerprint. |
+| `slot_id` | `string` | Content-key slot identifier included in AAD. Currently always `"key-1"`. |
 | `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
 | `encrypted_data` | `bytes` | Ciphertext including the 16-byte Poly1305 tag (4-byte LE length prefix + N bytes) |
 
@@ -671,9 +623,10 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 
 | Limitation | Impact | Workaround |
 |---|---|---|
-| **No key rotation** | To change the key, you must re-encrypt the entire file. | Re-run `encrypt` with the new public key after decrypting with the old one. |
+| **No key rotation** | To change the key, re-encrypt the entire file. | Run `encrypt` with the new public key after decrypting with the old one. |
 | **Attachments are not encrypted** | Attachment content passes through in plaintext. | Encrypt sensitive attachments before writing to the MCAP. |
 | **Metadata records are not encrypted** | Arbitrary key-value metadata passes through in plaintext. | Strip or sanitize Metadata records before encrypting if they contain sensitive values. |
+| **Chunks are not padded** | Ciphertext length reveals approximate plaintext payload size. | Strip or normalize chunk sizes before encrypting if payload size is sensitive. |
 | **Input must be chunked** | Non-chunked MCAP files are rejected. | Re-encode with chunking enabled (the Foxglove CLI and most MCAP writers produce chunked output by default). |
 | **Bridge loads everything into memory** | Large files require sufficient RAM. | Use `decrypt` to produce a standard file, then open it in Foxglove Studio directly. |
 
@@ -682,10 +635,10 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 | Limitation | Impact | Notes |
 |---|---|---|
 | **In-memory only** | The TypeScript API holds the entire file in a `Uint8Array`. | Use the Go CLI for files larger than available RAM. |
-| **No LZ4 support** | `encryptMcap()` throws if any source chunk uses LZ4 compression. Cannot decompress LZ4-encrypted chunks. | Use the Go CLI to encrypt LZ4 source files; it normalizes to zstd automatically. |
+| **No LZ4 support** | `encryptMcap()` throws if any source chunk uses LZ4 compression. | Use the Go CLI to encrypt LZ4 source files; it normalizes to zstd automatically. |
 | **RSA recipients only** | The TypeScript library does not support X25519 key wrapping or unwrapping. Files encrypted with an X25519 public key cannot be decrypted by TypeScript. | Use the Go CLI for X25519 recipients. |
 
-### Not yet implemented
+### Roadmap
 
 - Python library.
 - `mcap-encrypt inspect` command (shows metadata of an encrypted file without decrypting).
@@ -695,18 +648,15 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 
 ## Contributing
 
-Issues and PRs welcome at [github.com/remete618/mcap-encrypt](https://github.com/remete618/mcap-encrypt).
+Issues and PRs welcome at [github.com/remete618/mcap-encrypt](https://github.com/remete618/mcap-encrypt). Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
-**Best tasks to pick up:**
+**Open tasks:**
 
 | # | Task | Difficulty | Issue |
 |---|---|---|---|
-| 1 | LZ4 rejection test + multi-chunk regression test (TypeScript) | small | [#9](https://github.com/remete618/mcap-encrypt/issues/9) |
-| 2 | `mcap-encrypt inspect` command | medium | [#14](https://github.com/remete618/mcap-encrypt/issues/14) |
-| 3 | Browser smoke test (Vitest browser mode) | medium | [#17](https://github.com/remete618/mcap-encrypt/issues/17) |
-| 4 | Go benchmark script + README throughput table | medium | [#16](https://github.com/remete618/mcap-encrypt/issues/16) |
-| 5 | CONTRIBUTING.md + GitHub issue templates | small | [#19](https://github.com/remete618/mcap-encrypt/issues/19) |
-| 6 | Bound in-memory chunk buffering for large files (Go) | large | [#15](https://github.com/remete618/mcap-encrypt/issues/15) |
+| 1 | `mcap-encrypt inspect` command | medium | [#14](https://github.com/remete618/mcap-encrypt/issues/14) |
+| 2 | Browser smoke test (Vitest browser mode) | medium | [#17](https://github.com/remete618/mcap-encrypt/issues/17) |
+| 3 | Go benchmark script + README throughput table | medium | [#16](https://github.com/remete618/mcap-encrypt/issues/16) |
 
 Run tests locally before opening a PR:
 
@@ -717,7 +667,7 @@ go test ./...
 # TypeScript
 cd ts && npm test
 
-# Interop (requires Go installed)
+# Cross-language interop (requires Go installed)
 cd ts && npm run test:interop
 ```
 
@@ -725,6 +675,7 @@ cd ts && npm run test:interop
 
 ## License
 
-MIT License. Copyright (c) 2026 Radu Cioplea. See [LICENSE](LICENSE) for the full text.
+[MIT](LICENSE). Use it freely: fork, embed, ship, and redistribute with attribution.
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-Contact: radu@cioplea.com · [github.com/remete618](https://github.com/remete618) · [www.eyepaq.com](https://www.eyepaq.com)
+Radu Cioplea · [Foxglove](https://foxglove.dev) · [radu@cioplea.com](mailto:radu@cioplea.com) · [eyepaq.com](https://www.eyepaq.com) · [github.com/remete618](https://github.com/remete618)
