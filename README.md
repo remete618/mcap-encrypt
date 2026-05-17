@@ -215,6 +215,12 @@ cd mcap-encrypt
 go build -o mcap-encrypt ./cmd/mcap-encrypt
 ```
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install remete618/mcap-encrypt/mcap-encrypt
+```
+
 ### Go library
 
 ```bash
