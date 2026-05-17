@@ -38,6 +38,33 @@ func buildTestMCAPWithAttachment(t *testing.T, path string) {
 	require.NoError(t, w.Close())
 }
 
+// buildTestMCAPWithKeyNamedAttachment writes a MCAP that contains an attachment
+// whose name matches mcap_encryption_key but whose media type is NOT the wrapped-key
+// type. This attachment must survive encrypt/decrypt unchanged.
+func buildTestMCAPWithKeyNamedAttachment(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer f.Close()
+
+	w, err := mcap.NewWriter(f, &mcap.WriterOptions{Chunked: true, ChunkSize: 4096, Compression: mcap.CompressionZSTD})
+	require.NoError(t, err)
+	require.NoError(t, w.WriteHeader(&mcap.Header{Profile: "test"}))
+	require.NoError(t, w.WriteSchema(&mcap.Schema{ID: 1, Name: "s", Encoding: "json", Data: []byte("{}")}))
+	require.NoError(t, w.WriteChannel(&mcap.Channel{ID: 1, SchemaID: 1, Topic: "/t", MessageEncoding: "json"}))
+	require.NoError(t, w.WriteMessage(&mcap.Message{ChannelID: 1, LogTime: 1_000, Data: []byte(`{}`)}))
+	payload := []byte("user data")
+	require.NoError(t, w.WriteAttachment(&mcap.Attachment{
+		LogTime:    500,
+		CreateTime: 0,
+		Name:       mcapencrypt.AttachmentName,      // same name as key attachment
+		MediaType:  "application/octet-stream",      // different media type
+		DataSize:   uint64(len(payload)),
+		Data:       bytes.NewReader(payload),
+	}))
+	require.NoError(t, w.Close())
+}
+
 // buildEmptyMCAP writes a MCAP with header/footer but no messages.
 func buildEmptyMCAP(t *testing.T, path string) {
 	t.Helper()
@@ -321,6 +348,26 @@ func buildTestMCAPWithMetadata(t *testing.T, path string) {
 		Metadata: map[string]string{"serial": "ABC-123", "version": "1.2.3"},
 	}))
 	require.NoError(t, w.Close())
+}
+
+// TestKeyNamedAttachmentSurvivesEncrypt verifies that a user attachment whose name
+// matches mcap_encryption_key but whose media type is not the key wrapper type is
+// not silently dropped during encryption/decryption.
+func TestKeyNamedAttachmentSurvivesEncrypt(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithKeyNamedAttachment(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
+
+	names := readAttachments(t, decPath)
+	require.Contains(t, names, mcapencrypt.AttachmentName,
+		"attachment with key name but different media type must survive round-trip")
 }
 
 // TestOverwriteRejectedByLibrary verifies the library itself refuses to overwrite an

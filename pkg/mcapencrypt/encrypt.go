@@ -233,7 +233,9 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string, progress .
 				return readErr
 			}
 			// Skip wrapped-key attachments from previously encrypted inputs.
-			if ar.Name == AttachmentName {
+			// Check both name AND media type so a legitimate user attachment that
+			// happens to share the name is not silently dropped.
+			if ar.Name == AttachmentName && ar.MediaType == AttachmentMediaType {
 				return nil
 			}
 			if err := flushPending(); err != nil {

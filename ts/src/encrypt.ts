@@ -204,11 +204,14 @@ export async function encryptMcap(
       case OP_ATTACHMENT: {
         // Pass non-key attachments through plaintext. Guard against wrapped-key
         // attachments from previously encrypted files appearing as input.
+        // Check both name AND media type so a user attachment that happens to
+        // share the name is not silently dropped.
         const attReader = new BinaryReader(data);
         attReader.readUint64(); // log_time
         attReader.readUint64(); // create_time
         const attName = attReader.readString();
-        if (attName !== ATTACHMENT_NAME) {
+        const attMediaType = attReader.readString();
+        if (attName !== ATTACHMENT_NAME || attMediaType !== ATTACHMENT_MEDIA_TYPE) {
           flushPending();
           writeRecord(writer, OP_ATTACHMENT, data);
         }
