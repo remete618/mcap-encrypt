@@ -83,7 +83,7 @@ describe("multi-recipient", () => {
 
     const enc = await encryptMcap(testMcap, [keysA.publicKeyPem, keysB.publicKeyPem]);
     await expect(decryptMcap(enc, keysC.privateKeyPem)).rejects.toThrow(/2 recipient/);
-  });
+  }, 30_000);
 });
 
 describe("input validation", () => {

@@ -57,8 +57,8 @@ func buildTestMCAPWithKeyNamedAttachment(t *testing.T, path string) {
 	require.NoError(t, w.WriteAttachment(&mcap.Attachment{
 		LogTime:    500,
 		CreateTime: 0,
-		Name:       mcapencrypt.AttachmentName,      // same name as key attachment
-		MediaType:  "application/octet-stream",      // different media type
+		Name:       mcapencrypt.AttachmentName, // same name as key attachment
+		MediaType:  "application/octet-stream", // different media type
 		DataSize:   uint64(len(payload)),
 		Data:       bytes.NewReader(payload),
 	}))

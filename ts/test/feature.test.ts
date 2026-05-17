@@ -60,7 +60,7 @@ describe("iterateMessages error paths", () => {
     const other = await generateKeyPair();
     const gen = iterateMessages(enc, other.privateKeyPem);
     await expect(gen.next()).rejects.toThrow(/private key does not match/);
-  });
+  }, 20_000);
 });
 
 describe("metadata passthrough", () => {

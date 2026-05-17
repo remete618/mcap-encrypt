@@ -251,8 +251,8 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string, progress .
 	// encChunkMeta captures the file position and key metadata of each
 	// EncryptedChunk record so we can populate ChunkIndex in the summary.
 	type encChunkMeta struct {
-		fileOffset     int64  // byte position of the record's opcode byte
-		recordLen      int64  // 9 (header) + len(encoded data)
+		fileOffset     int64 // byte position of the record's opcode byte
+		recordLen      int64 // 9 (header) + len(encoded data)
 		msgStart       uint64
 		msgEnd         uint64
 		compression    string
@@ -439,15 +439,24 @@ outer:
 			}
 			statsBuf := make([]byte, 8+2+4+4+4+4+8+8+4)
 			o := 0
-			put64(statsBuf[o:], 0); o += 8                          // message_count (unknown)
-			put16(statsBuf[o:], uint16(schemaCount)); o += 2         // schema_count
-			put32(statsBuf[o:], uint32(channelCount)); o += 4        // channel_count
-			put32(statsBuf[o:], 0); o += 4                          // attachment_count
-			put32(statsBuf[o:], 0); o += 4                          // metadata_count
-			put32(statsBuf[o:], uint32(len(encChunkMetas))); o += 4 // chunk_count
-			put64(statsBuf[o:], globalMsgStart); o += 8             // message_start_time
-			put64(statsBuf[o:], globalMsgEnd); o += 8               // message_end_time
-			put32(statsBuf[o:], 0); o += 4                          // channel_message_counts: empty
+			put64(statsBuf[o:], 0)
+			o += 8 // message_count (unknown)
+			put16(statsBuf[o:], uint16(schemaCount))
+			o += 2 // schema_count
+			put32(statsBuf[o:], uint32(channelCount))
+			o += 4 // channel_count
+			put32(statsBuf[o:], 0)
+			o += 4 // attachment_count
+			put32(statsBuf[o:], 0)
+			o += 4 // metadata_count
+			put32(statsBuf[o:], uint32(len(encChunkMetas)))
+			o += 4 // chunk_count
+			put64(statsBuf[o:], globalMsgStart)
+			o += 8 // message_start_time
+			put64(statsBuf[o:], globalMsgEnd)
+			o += 8 // message_end_time
+			put32(statsBuf[o:], 0)
+			o += 4 // channel_message_counts: empty
 			emitRec(opcodeStatistics, statsBuf)
 			groups = append(groups, group{opcodeStatistics, statsStart, summaryStart + written - statsStart})
 
@@ -459,15 +468,24 @@ outer:
 				comp := m.compression
 				ci := make([]byte, 8+8+8+8+4+8+4+len(comp)+8+8)
 				o := 0
-				put64(ci[o:], m.msgStart); o += 8
-				put64(ci[o:], m.msgEnd); o += 8
-				put64(ci[o:], uint64(m.fileOffset)); o += 8
-				put64(ci[o:], uint64(m.recordLen)); o += 8
-				put32(ci[o:], 0); o += 4           // message_index_offsets: empty
-				put64(ci[o:], 0); o += 8           // message_index_length: 0
-				copy(ci[o:], putStr(comp)); o += 4 + len(comp)
-				put64(ci[o:], m.compressedSize); o += 8
-				put64(ci[o:], m.uncompSize); o += 8
+				put64(ci[o:], m.msgStart)
+				o += 8
+				put64(ci[o:], m.msgEnd)
+				o += 8
+				put64(ci[o:], uint64(m.fileOffset))
+				o += 8
+				put64(ci[o:], uint64(m.recordLen))
+				o += 8
+				put32(ci[o:], 0)
+				o += 4 // message_index_offsets: empty
+				put64(ci[o:], 0)
+				o += 8 // message_index_length: 0
+				copy(ci[o:], putStr(comp))
+				o += 4 + len(comp)
+				put64(ci[o:], m.compressedSize)
+				o += 8
+				put64(ci[o:], m.uncompSize)
+				o += 8
 				emitRec(opcodeChunkIndex, ci[:o])
 			}
 			if l := summaryStart + written - chunkIdxStart; l > 0 {
