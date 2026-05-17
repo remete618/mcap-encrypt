@@ -188,6 +188,187 @@ func TestManifestStrippedV3Rejected(t *testing.T) {
 	require.Contains(t, err.Error(), "manifest attachment missing")
 }
 
+// TestNonceUniquenessAcrossChunks verifies that each EncryptedChunk in a file
+// receives a distinct random nonce. Nonce reuse under XChaCha20-Poly1305 with the
+// same key leaks the XOR of plaintexts and breaks authentication.
+func TestNonceUniquenessAcrossChunks(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	data, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+
+	nonces := map[string]struct{}{}
+	pos := 8
+	for pos+9 <= len(data) {
+		opcode := data[pos]
+		n := int(binary.LittleEndian.Uint64(data[pos+1:]))
+		if opcode == mcapencrypt.OpcodeEncryptedChunk {
+			ec, parseErr := mcapencrypt.DecodeEncryptedChunk(data[pos+9 : pos+9+n])
+			require.NoError(t, parseErr)
+			key := string(ec.Nonce)
+			_, duplicate := nonces[key]
+			require.False(t, duplicate, "nonce reused between chunks: %x", ec.Nonce)
+			nonces[key] = struct{}{}
+		}
+		pos += 9 + n
+	}
+	require.Greater(t, len(nonces), 1, "test requires at least 2 encrypted chunks; verify ChunkSize in buildTestMCAP")
+}
+
+// TestAADFieldsTampering verifies that each field included in the AEAD additional
+// data is actually bound to the authentication tag. Modifying any AAD field in the
+// plaintext header of an EncryptedChunk must cause decryption to fail, proving no
+// field can be silently altered after encryption.
+//
+// AAD covers: fileID, chunkIdx, slot_id, compression, uncompressed_size,
+// uncompressed_crc, message_start_time, and message_end_time.
+// message_start_time is already tested in TestTamperedAAD.
+func TestAADFieldsTampering(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	data, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+	recStart, recLen := findFirstEncryptedChunk(t, data)
+
+	ec, parseErr := mcapencrypt.DecodeEncryptedChunk(data[recStart : recStart+recLen])
+	require.NoError(t, parseErr)
+
+	// tamperField re-encodes a modified EncryptedChunk, splices it back into the
+	// file in-place (same byte length), and asserts that decryption fails with an
+	// authentication error.
+	tamperField := func(t *testing.T, mod *mcapencrypt.EncryptedChunk) {
+		t.Helper()
+		newData := mod.Encode()
+		require.Equal(t, recLen, len(newData), "re-encoded chunk must have same byte length for in-place splice")
+		tampered := make([]byte, len(data))
+		copy(tampered, data)
+		copy(tampered[recStart:], newData)
+
+		tmpDir := t.TempDir()
+		tamperedPath := filepath.Join(tmpDir, "tampered.mcap")
+		decPath := filepath.Join(tmpDir, "out.mcap")
+		require.NoError(t, os.WriteFile(tamperedPath, tampered, 0o644))
+		decErr := mcapencrypt.Decrypt(tamperedPath, decPath, keyBase+".priv.pem")
+		require.Error(t, decErr)
+		require.Contains(t, decErr.Error(), "authentication failed")
+	}
+
+	t.Run("MessageEndTime", func(t *testing.T) {
+		mod := *ec
+		mod.MessageEndTime ^= 1
+		tamperField(t, &mod)
+	})
+	t.Run("UncompressedSize", func(t *testing.T) {
+		mod := *ec
+		mod.UncompressedSize ^= 1
+		tamperField(t, &mod)
+	})
+	t.Run("UncompressedCRC", func(t *testing.T) {
+		mod := *ec
+		mod.UncompressedCRC ^= 1
+		tamperField(t, &mod)
+	})
+	t.Run("SlotID", func(t *testing.T) {
+		mod := *ec
+		b := []byte(ec.SlotID)
+		b[len(b)-1] ^= 0xFF
+		mod.SlotID = string(b)
+		tamperField(t, &mod)
+	})
+	t.Run("Compression", func(t *testing.T) {
+		mod := *ec
+		b := []byte(ec.Compression)
+		b[0] ^= 0xFF
+		mod.Compression = string(b)
+		tamperField(t, &mod)
+	})
+}
+
+// tamperWrappedKeyFileID locates the wrapped-key attachment in data and flips a
+// byte in the FileID field of its WrappedKeyData payload. The FileID is the first
+// 16 bytes after the version byte; it is included in the AAD of every encrypted
+// chunk, so any modification must cause authentication to fail.
+func tamperWrappedKeyFileID(t *testing.T, data []byte) []byte {
+	t.Helper()
+	tampered := make([]byte, len(data))
+	copy(tampered, data)
+
+	pos := 8
+	for pos+9 <= len(data) {
+		opcode := data[pos]
+		n := int(binary.LittleEndian.Uint64(data[pos+1:]))
+		if opcode == 0x09 && pos+9+n <= len(data) {
+			payload := data[pos+9 : pos+9+n]
+			if len(payload) <= 20 {
+				pos += 9 + n
+				continue
+			}
+			nameLen := int(binary.LittleEndian.Uint32(payload[16:20]))
+			if 20+nameLen > len(payload) || string(payload[20:20+nameLen]) != mcapencrypt.AttachmentName {
+				pos += 9 + n
+				continue
+			}
+			// Advance past name to mediaType length prefix.
+			o := 20 + nameLen
+			if o+4 > len(payload) {
+				t.Fatal("attachment too short to read mediaType length")
+			}
+			mediaTypeLen := int(binary.LittleEndian.Uint32(payload[o:]))
+			o += 4 + mediaTypeLen + 8 // skip mediaType bytes and dataSize field
+			// WrappedKeyData layout: version(1) + fileID(16) + ...
+			// fileID starts at o+1.
+			if o+1+16 > len(payload) {
+				t.Fatal("attachment too short to contain WrappedKeyData fileID")
+			}
+			tampered[pos+9+o+1] ^= 0xFF
+			return tampered
+		}
+		pos += 9 + n
+	}
+	t.Fatal("wrapped-key attachment not found in encrypted file")
+	return nil
+}
+
+// TestWrappedKeyFileIDTamperRejected verifies that the FileID stored in the
+// wrapped-key attachment is bound to chunk authentication. The FileID is
+// included in the AAD of every EncryptedChunk; tampering it causes aead.Open to
+// fail with an authentication error on the first chunk, before the manifest check.
+func TestWrappedKeyFileIDTamperRejected(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	data, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+	tampered := tamperWrappedKeyFileID(t, data)
+
+	tamperedPath := filepath.Join(dir, "tampered.mcap")
+	require.NoError(t, os.WriteFile(tamperedPath, tampered, 0o644))
+
+	decErr := mcapencrypt.Decrypt(tamperedPath, filepath.Join(dir, "out.mcap"), keyBase+".priv.pem")
+	require.Error(t, decErr)
+	require.Contains(t, decErr.Error(), "authentication failed")
+}
+
 func TestNonChunkedInputRejected(t *testing.T) {
 	dir := t.TempDir()
 	flatPath := filepath.Join(dir, "flat.mcap")

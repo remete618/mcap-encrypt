@@ -449,6 +449,62 @@ func TestEncryptedFileSummarySection(t *testing.T) {
 	require.False(t, seen[0x05], "plaintext Message (0x05) must not appear in encrypted file")
 }
 
+// TestLZ4InputNormalized verifies that an LZ4-compressed source MCAP is accepted
+// and transparently re-compressed to zstd in the encrypted output. Go normalizes
+// LZ4 because no pure-JS LZ4 decoder exists, so all encrypted files must use
+// compression formats that both Go and TypeScript can decode. The round-trip must
+// preserve all messages.
+func TestLZ4InputNormalized(t *testing.T) {
+	dir := t.TempDir()
+	lz4Path := filepath.Join(dir, "lz4.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	f, err := os.Create(lz4Path)
+	require.NoError(t, err)
+	w, err := mcap.NewWriter(f, &mcap.WriterOptions{
+		Chunked:     true,
+		ChunkSize:   512,
+		Compression: mcap.CompressionLZ4,
+	})
+	require.NoError(t, err)
+	require.NoError(t, w.WriteHeader(&mcap.Header{Profile: "ros2"}))
+	require.NoError(t, w.WriteSchema(&mcap.Schema{ID: 1, Name: "s", Encoding: "json", Data: []byte(`{}`)}))
+	require.NoError(t, w.WriteChannel(&mcap.Channel{ID: 1, SchemaID: 1, Topic: "/t", MessageEncoding: "json"}))
+	for i := range 10 {
+		require.NoError(t, w.WriteMessage(&mcap.Message{
+			ChannelID: 1,
+			LogTime:   uint64(i) * 1_000_000,
+			Data:      []byte(`{"v":1}`),
+		}))
+	}
+	require.NoError(t, w.Close())
+	f.Close()
+
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(lz4Path, encPath, keyBase+".pub.pem"))
+
+	// All EncryptedChunks must use "zstd", not "lz4".
+	encData, readErr := os.ReadFile(encPath)
+	require.NoError(t, readErr)
+	pos := 8
+	for pos+9 <= len(encData) {
+		opcode := encData[pos]
+		n := int(binary.LittleEndian.Uint64(encData[pos+1:]))
+		if opcode == mcapencrypt.OpcodeEncryptedChunk {
+			ec, parseErr := mcapencrypt.DecodeEncryptedChunk(encData[pos+9 : pos+9+n])
+			require.NoError(t, parseErr)
+			require.Equal(t, "zstd", ec.Compression, "LZ4 input must be normalized to zstd in EncryptedChunk")
+		}
+		pos += 9 + n
+	}
+
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
+	msgs := readAllMessages(t, decPath)
+	require.Len(t, msgs, 10, "all messages must survive LZ4-to-zstd normalization")
+}
+
 // TestEncryptedChunkOpcodePresent verifies 0x81 records appear in the output.
 func TestEncryptedChunkOpcodePresent(t *testing.T) {
 	dir := t.TempDir()
