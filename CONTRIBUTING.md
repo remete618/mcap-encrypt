@@ -57,4 +57,4 @@ The Go CLI and the npm package are versioned independently:
 
 ## Security
 
-To report a vulnerability, see [SECURITY.md](SECURITY.md).
+To report a vulnerability, see [SECURITY.md](.github/SECURITY.md).

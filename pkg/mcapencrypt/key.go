@@ -142,6 +142,14 @@ func DecodeWrappedKeyData(data []byte) (*WrappedKeyData, error) {
 // GenerateKeyPair writes a 4096-bit RSA key pair:
 // basename.priv.pem (0600) and basename.pub.pem (0644).
 func GenerateKeyPair(basename string) error {
+	privPath := basename + ".priv.pem"
+	pubPath := basename + ".pub.pem"
+	if _, err := os.Stat(privPath); err == nil {
+		return fmt.Errorf("key file already exists: %q (delete it first or choose a different basename)", privPath)
+	}
+	if _, err := os.Stat(pubPath); err == nil {
+		return fmt.Errorf("key file already exists: %q (delete it first or choose a different basename)", pubPath)
+	}
 	priv, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return fmt.Errorf("generate RSA key: %w", err)
@@ -153,7 +161,7 @@ func GenerateKeyPair(basename string) error {
 	defer clear(privDER)
 	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
 	defer clear(privPEM)
-	if err := os.WriteFile(basename+".priv.pem", privPEM, 0600); err != nil {
+	if err := os.WriteFile(privPath, privPEM, 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
 	pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
@@ -161,7 +169,7 @@ func GenerateKeyPair(basename string) error {
 		return fmt.Errorf("marshal public key: %w", err)
 	}
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
-	if err := os.WriteFile(basename+".pub.pem", pubPEM, 0644); err != nil {
+	if err := os.WriteFile(pubPath, pubPEM, 0644); err != nil {
 		return fmt.Errorf("write public key: %w", err)
 	}
 	return nil
@@ -170,6 +178,14 @@ func GenerateKeyPair(basename string) error {
 // GenerateX25519KeyPair writes an X25519 key pair:
 // basename.priv.pem (0600) and basename.pub.pem (0644).
 func GenerateX25519KeyPair(basename string) error {
+	privPath := basename + ".priv.pem"
+	pubPath := basename + ".pub.pem"
+	if _, err := os.Stat(privPath); err == nil {
+		return fmt.Errorf("key file already exists: %q (delete it first or choose a different basename)", privPath)
+	}
+	if _, err := os.Stat(pubPath); err == nil {
+		return fmt.Errorf("key file already exists: %q (delete it first or choose a different basename)", pubPath)
+	}
 	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return fmt.Errorf("generate X25519 key: %w", err)
@@ -181,7 +197,7 @@ func GenerateX25519KeyPair(basename string) error {
 	defer clear(privDER)
 	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
 	defer clear(privPEM)
-	if err := os.WriteFile(basename+".priv.pem", privPEM, 0600); err != nil {
+	if err := os.WriteFile(privPath, privPEM, 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
 	pubDER, err := x509.MarshalPKIXPublicKey(priv.PublicKey())
@@ -189,7 +205,7 @@ func GenerateX25519KeyPair(basename string) error {
 		return fmt.Errorf("marshal public key: %w", err)
 	}
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
-	if err := os.WriteFile(basename+".pub.pem", pubPEM, 0644); err != nil {
+	if err := os.WriteFile(pubPath, pubPEM, 0644); err != nil {
 		return fmt.Errorf("write public key: %w", err)
 	}
 	return nil

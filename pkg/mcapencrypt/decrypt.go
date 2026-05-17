@@ -446,10 +446,10 @@ func writeChunkMessages(compressed []byte, compression string, expectedSize uint
 		innerOpcode := decompressed[o]
 		length := binary.LittleEndian.Uint64(decompressed[o+1 : o+9])
 		o += 9
-		end := o + int(length)
-		if end < o || end > len(decompressed) {
+		if length > uint64(len(decompressed)-o) {
 			return fmt.Errorf("truncated inner record data at offset %d (need %d bytes)", o, length)
 		}
+		end := o + int(length)
 		if innerOpcode == 0x05 {
 			msg, parseErr := mcap.ParseMessage(decompressed[o:end])
 			if parseErr != nil {

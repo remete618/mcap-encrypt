@@ -52,6 +52,7 @@ Every encrypted file carries a random 16-byte FileID embedded in each wrapped-ke
 **Out of scope:**
 - Side-channel and timing attacks. No constant-time guarantees beyond what Go's `crypto/rsa` and `crypto/ecdh` packages provide.
 - In-memory key extraction. The PEM/DER buffer is zeroed immediately after parsing; the parsed key struct is managed by the Go runtime and is not zeroed on use.
+- TypeScript key material zeroing. The JavaScript runtime provides no guaranteed memory-wipe primitive; the symmetric key and private key buffers in the TypeScript implementation are not zeroed after use.
 - Compromise of private key files on disk or in transit.
 
 ## Security status
