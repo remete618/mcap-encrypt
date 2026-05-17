@@ -549,7 +549,15 @@ async function* streamMessages(
 // throughout. Message data is processed one chunk at a time (at most
 // MAX_CHUNK_BYTES = 4 MiB in the current accumulator); no Message[] is
 // accumulated across chunks, so large files do not require proportional RAM.
-export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Promise<Uint8Array> {
+//
+// The optional onWarn callback is called with a human-readable message when a
+// non-fatal issue is encountered, such as a wrapped-key attachment that cannot
+// be parsed. If omitted, such issues are silently skipped (backward compatible).
+export async function decryptMcap(
+  input: Uint8Array,
+  privateKeyPem: string,
+  onWarn?: (msg: string) => void,
+): Promise<Uint8Array> {
   const r = new BinaryReader(input);
   readMagic(r);
 
@@ -597,7 +605,9 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
           try {
             const wkd = decodeWrappedKeyData(att.data);
             if (wkd.version >= 3) manifestRequired = true;
-          } catch { /* malformed; ignore */ }
+          } catch (e) {
+            onWarn?.(`wrapped-key attachment #${wkaCount} could not be parsed: ${e instanceof Error ? e.message : String(e)}`);
+          }
           if (!unwrapped) {
             unwrapped = await tryUnwrapKey(att.data, privateKeyPem);
           }

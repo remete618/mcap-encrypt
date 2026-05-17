@@ -39,6 +39,44 @@ func (p *progressReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
+// DecryptOptions carries optional parameters for DecryptWithOptions.
+type DecryptOptions struct {
+	// WarnFunc is called with a human-readable message whenever a non-fatal
+	// issue is encountered during decryption (e.g. a wrapped-key attachment
+	// that cannot be parsed). If nil, such issues are silently skipped.
+	WarnFunc func(string)
+}
+
+// DecryptWithOptions decrypts an encrypted MCAP stream and writes a standard,
+// indexed MCAP to w. It behaves identically to the file-based Decrypt function
+// but operates on arbitrary io.Reader / io.Writer pairs and accepts DecryptOptions.
+func DecryptWithOptions(r io.Reader, w io.Writer, privateKeyPem string, opts DecryptOptions) error {
+	privKey, err := parsePrivateKeyPEM(privateKeyPem)
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
+	}
+	var unwrap func(kekAlg string, wrappedKey []byte) ([]byte, error)
+	switch k := privKey.(type) {
+	case *rsa.PrivateKey:
+		unwrap = func(kekAlg string, wrappedKey []byte) ([]byte, error) {
+			if kekAlg != "rsa-oaep-sha256" {
+				return nil, fmt.Errorf("private key is RSA but slot uses %q", kekAlg)
+			}
+			return UnwrapSymmetricKey(wrappedKey, k)
+		}
+	case *ecdh.PrivateKey:
+		unwrap = func(kekAlg string, wrappedKey []byte) ([]byte, error) {
+			if kekAlg != "x25519-hkdf-xchacha20poly1305" {
+				return nil, fmt.Errorf("private key is X25519 but slot uses %q", kekAlg)
+			}
+			return UnwrapSymmetricKeyX25519(wrappedKey, k)
+		}
+	default:
+		return fmt.Errorf("unsupported private key type %T", privKey)
+	}
+	return streamDecrypt(r, w, unwrap, opts.WarnFunc)
+}
+
 // Decrypt reads an encrypted MCAP file and writes a standard, indexed MCAP file.
 // The optional progress callback receives cumulative bytes read from the input.
 func Decrypt(inputPath, outputPath, privKeyPath string, progress ...func(int64)) (retErr error) {
@@ -110,7 +148,7 @@ func Decrypt(inputPath, outputPath, privKeyPath string, progress ...func(int64))
 	if len(progress) > 0 && progress[0] != nil {
 		src = &progressReader{r: inFile, progress: progress[0]}
 	}
-	if err := streamDecrypt(src, tmpFile, unwrap); err != nil {
+	if err := streamDecrypt(src, tmpFile, unwrap, nil); err != nil {
 		return err
 	}
 	if err := tmpFile.Close(); err != nil {
@@ -128,7 +166,10 @@ func Decrypt(inputPath, outputPath, privKeyPath string, progress ...func(int64))
 // unwrap receives the kek_algorithm name and wrapped key bytes from each
 // wrapped-key attachment and returns the symmetric key or an error (e.g. wrong
 // key type or failed RSA/X25519 unwrap).
-func streamDecrypt(r io.Reader, w io.Writer, unwrap func(kekAlg string, wrappedKey []byte) ([]byte, error)) error {
+//
+// warnFunc, if non-nil, is called with a human-readable message whenever a
+// non-fatal issue is encountered (e.g. a malformed wrapped-key attachment).
+func streamDecrypt(r io.Reader, w io.Writer, unwrap func(kekAlg string, wrappedKey []byte) ([]byte, error), warnFunc func(string)) error {
 	if err := ReadMagic(r); err != nil {
 		return fmt.Errorf("read magic: %w", err)
 	}
@@ -258,6 +299,9 @@ scan:
 			wkaCount++
 			wkd, decErr := DecodeWrappedKeyData(attData)
 			if decErr != nil {
+				if warnFunc != nil {
+					warnFunc(fmt.Sprintf("wrapped-key attachment #%d could not be parsed: %v", wkaCount, decErr))
+				}
 				continue // malformed attachment; try the next one
 			}
 			// v3+ files always write a manifest; require it on decrypt.

@@ -297,6 +297,28 @@ func LoadPrivateKeyAny(path string) (any, error) {
 	}
 }
 
+// parsePrivateKeyPEM parses an RSA or X25519 private key from a PEM string.
+// The DER bytes are zeroed immediately after parsing.
+func parsePrivateKeyPEM(pemStr string) (any, error) {
+	data := []byte(pemStr)
+	defer clear(data)
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in provided key string")
+	}
+	defer clear(block.Bytes)
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	switch key.(type) {
+	case *rsa.PrivateKey, *ecdh.PrivateKey:
+		return key, nil
+	default:
+		return nil, fmt.Errorf("unsupported private key type %T", key)
+	}
+}
+
 // WrapSymmetricKey wraps symKey using RSA-OAEP-SHA256.
 func WrapSymmetricKey(symKey []byte, pub *rsa.PublicKey) ([]byte, error) {
 	return rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, symKey, nil)

@@ -106,6 +106,6 @@ func FuzzStreamDecrypt(f *testing.F) {
 	f.Add([]byte("not mcap at all"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = streamDecrypt(bytes.NewReader(data), io.Discard, unwrap)
+		_ = streamDecrypt(bytes.NewReader(data), io.Discard, unwrap, nil)
 	})
 }
