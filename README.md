@@ -186,6 +186,8 @@ The library includes adversarial tests for ciphertext tampering, chunk swapping,
 
 This project has not been externally audited. Do not use it as the only protection layer for highly sensitive production data without independent review.
 
+For the full threat model, resolved findings, and test coverage details, see [SECURITY.md](SECURITY.md). To report a vulnerability, email radu@cioplea.com rather than opening a public issue.
+
 ---
 
 ## Alternatives

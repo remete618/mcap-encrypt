@@ -1,6 +1,7 @@
 package mcapencrypt_test
 
 import (
+	"bytes"
 	"encoding/binary"
 	"os"
 	"path/filepath"
@@ -367,6 +368,39 @@ func TestWrappedKeyFileIDTamperRejected(t *testing.T) {
 	decErr := mcapencrypt.Decrypt(tamperedPath, filepath.Join(dir, "out.mcap"), keyBase+".priv.pem")
 	require.Error(t, decErr)
 	require.Contains(t, decErr.Error(), "authentication failed")
+}
+
+// TestReadRecordOversizedLengthRejected verifies that ReadRecord rejects a record
+// whose length field exceeds maxRecordDataSize (1 << 32). This is the boundary
+// condition fixed by INT-2025-001; values above the limit previously caused a
+// runtime panic in make([]byte, length).
+func TestReadRecordOversizedLengthRejected(t *testing.T) {
+	var buf bytes.Buffer
+	buf.WriteByte(0x01)
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], (1<<32)+1) // one above the limit
+	buf.Write(lenBuf[:])
+
+	_, _, err := mcapencrypt.ReadRecord(&buf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds maximum allowed size")
+}
+
+// TestReadRecordAtLimit verifies that a record with length exactly equal to
+// maxRecordDataSize is rejected. The guard uses strict greater-than, so the
+// limit itself is the first accepted value only up to the constant boundary.
+func TestReadRecordAtLimit(t *testing.T) {
+	var buf bytes.Buffer
+	buf.WriteByte(0x01)
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], 1<<32) // exactly at the limit
+	buf.Write(lenBuf[:])
+	// The header is valid; the record body (4 GiB) cannot be read from the buffer.
+	// ReadRecord will fail on io.ReadFull, not on the size guard.
+	_, _, err := mcapencrypt.ReadRecord(&buf)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "exceeds maximum allowed size",
+		"the limit itself should not be rejected by the size guard; failure must be io.ReadFull")
 }
 
 func TestNonChunkedInputRejected(t *testing.T) {

@@ -30,10 +30,33 @@ Out of scope:
 - Attachment content not being encrypted (documented known limitation)
 - Vulnerabilities in dependencies (please report those upstream)
 
+## Threat model
+
+**Goals:**
+- Confidentiality: message data inside EncryptedChunk records is unreadable without the recipient's private key.
+- Integrity: any modification to ciphertext, nonces, AAD fields, or chunk count is detected before plaintext is returned. Per-chunk integrity is covered by AEAD authentication. Cross-chunk integrity (truncation, chunk removal) is covered by the manifest HMAC.
+
+**Attacker model:**
+The attacker has full read access to the encrypted file and knows all algorithms (Kerckhoffs principle). The symmetric key is generated randomly per file and is the only secret. Each recipient's private key is an independent secret.
+
+**What is NOT authenticated:**
+The MCAP summary section (ChunkIndex, Statistics, SummaryOffset) is plaintext and unauthenticated. This is intentional: it allows seekable access and time-range queries without the private key. The authenticated ground truth is the EncryptedChunk stream, not the summary.
+
+**FileID:**
+Every encrypted file carries a random 16-byte FileID embedded in each wrapped-key attachment and bound into the AAD of every EncryptedChunk. Transplanting a wrapped-key attachment from one file to another causes authentication to fail on the first chunk, because the fileID will not match.
+
+**Format versions:**
+- Version 2 (legacy): manifest attachment is optional on decryption.
+- Version 3 (current default): manifest is required. Decrypting a v3 file without the manifest attachment returns an error. All files written by this library use version 3.
+
+**Out of scope:**
+- Side-channel and timing attacks. No constant-time guarantees beyond what Go's `crypto/rsa` and `crypto/ecdh` packages provide.
+- In-memory key extraction. The PEM/DER buffer is zeroed immediately after parsing; the parsed key struct is managed by the Go runtime and is not zeroed on use.
+- Compromise of private key files on disk or in transit.
+
 ## Security status
 
-This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256, X25519-HKDF-XChaCha20Poly1305) and has
-adversarial unit tests. It has **not** been externally audited. Use accordingly.
+This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256, X25519-HKDF-XChaCha20Poly1305) and has adversarial unit tests. It has **not** been externally audited. Use accordingly.
 
 ## Resolved findings
 
