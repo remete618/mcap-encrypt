@@ -9,6 +9,11 @@ import (
 const (
 	mcapMagic = "\x89MCAP0\r\n"
 
+	// maxRecordDataSize is a hard cap on any single record payload.
+	// No real MCAP record approaches 4 GiB; values above this indicate
+	// corrupt or adversarial input and must not be passed to make().
+	maxRecordDataSize = 1 << 32
+
 	OpcodeEncryptedChunk = byte(0x81)
 
 	opcodeHeader        = byte(0x01)
@@ -48,6 +53,10 @@ func ReadRecord(r io.Reader) (opcode byte, data []byte, err error) {
 	}
 	opcode = hdr[0]
 	length := binary.LittleEndian.Uint64(hdr[1:])
+	if length > maxRecordDataSize {
+		err = fmt.Errorf("record length %d exceeds maximum allowed size (%d bytes)", length, uint64(maxRecordDataSize))
+		return
+	}
 	if length > 0 {
 		data = make([]byte, length)
 		_, err = io.ReadFull(r, data)
