@@ -11,17 +11,29 @@ import {
 import { buildTestMcap, collectMessages } from "./helpers.js";
 
 let keysA: KeyPair;
+let keysB: KeyPair;
+let keysC: KeyPair;
+let keysWrong: KeyPair;
+let x25519A: X25519KeyPair;
+let x25519B: X25519KeyPair;
+let x25519C: X25519KeyPair;
 let testMcap: Uint8Array;
 
 beforeAll(async () => {
-  keysA = await generateKeyPair();
+  [keysA, keysB, keysC, keysWrong, x25519A, x25519B, x25519C] = await Promise.all([
+    generateKeyPair(),
+    generateKeyPair(),
+    generateKeyPair(),
+    generateKeyPair(),
+    generateX25519KeyPair(),
+    generateX25519KeyPair(),
+    generateX25519KeyPair(),
+  ]);
   testMcap = buildTestMcap();
-});
+}, 60_000);
 
 describe("rotateMcapKeys", () => {
   it("round-trip: encrypt with A, rotate to B, decrypt with B — messages match", async () => {
-    const keysB = await generateKeyPair();
-
     const enc = await encryptMcap(testMcap, keysA.publicKeyPem);
     const rotated = await rotateMcapKeys(enc, keysA.privateKeyPem, keysB.publicKeyPem);
     const dec = await decryptMcap(rotated, keysB.privateKeyPem);
@@ -39,29 +51,22 @@ describe("rotateMcapKeys", () => {
   });
 
   it("old key is rejected after rotation", async () => {
-    const keysB = await generateKeyPair();
-
     const enc = await encryptMcap(testMcap, keysA.publicKeyPem);
     const rotated = await rotateMcapKeys(enc, keysA.privateKeyPem, keysB.publicKeyPem);
 
-    // Key A must no longer decrypt the rotated file.
     await expect(decryptMcap(rotated, keysA.privateKeyPem)).rejects.toThrow();
-    // Key B must succeed.
     await expect(decryptMcap(rotated, keysB.privateKeyPem)).resolves.toBeTruthy();
   });
 
   it("multi-recipient: both B and C can decrypt and get identical messages", async () => {
-    const keysB: X25519KeyPair = await generateX25519KeyPair();
-    const keysC: X25519KeyPair = await generateX25519KeyPair();
-
     const enc = await encryptMcap(testMcap, keysA.publicKeyPem);
     const rotated = await rotateMcapKeys(enc, keysA.privateKeyPem, [
-      keysB.publicKeyPem,
-      keysC.publicKeyPem,
+      x25519B.publicKeyPem,
+      x25519C.publicKeyPem,
     ]);
 
-    const decB = await decryptMcap(rotated, keysB.privateKeyPem);
-    const decC = await decryptMcap(rotated, keysC.privateKeyPem);
+    const decB = await decryptMcap(rotated, x25519B.privateKeyPem);
+    const decC = await decryptMcap(rotated, x25519C.privateKeyPem);
 
     const orig = collectMessages(testMcap);
     const gotB = collectMessages(decB);
@@ -76,16 +81,12 @@ describe("rotateMcapKeys", () => {
   });
 
   it("rejects a plain (non-encrypted) MCAP with a clear error", async () => {
-    const keysB = await generateKeyPair();
     await expect(
       rotateMcapKeys(testMcap, keysA.privateKeyPem, keysB.publicKeyPem),
     ).rejects.toThrow(/wrapped key attachment|old private key/);
   });
 
   it("rejects wrong old private key", async () => {
-    const keysB = await generateKeyPair();
-    const keysWrong = await generateKeyPair();
-
     const enc = await encryptMcap(testMcap, keysA.publicKeyPem);
     await expect(
       rotateMcapKeys(enc, keysWrong.privateKeyPem, keysB.publicKeyPem),
@@ -93,12 +94,9 @@ describe("rotateMcapKeys", () => {
   });
 
   it("X25519 round-trip: encrypt with X25519 A, rotate to X25519 B, decrypt with B", async () => {
-    const kA: X25519KeyPair = await generateX25519KeyPair();
-    const kB: X25519KeyPair = await generateX25519KeyPair();
-
-    const enc = await encryptMcap(testMcap, kA.publicKeyPem);
-    const rotated = await rotateMcapKeys(enc, kA.privateKeyPem, kB.publicKeyPem);
-    const dec = await decryptMcap(rotated, kB.privateKeyPem);
+    const enc = await encryptMcap(testMcap, x25519A.publicKeyPem);
+    const rotated = await rotateMcapKeys(enc, x25519A.privateKeyPem, x25519B.publicKeyPem);
+    const dec = await decryptMcap(rotated, x25519B.privateKeyPem);
 
     const orig = collectMessages(testMcap);
     const got = collectMessages(dec);
