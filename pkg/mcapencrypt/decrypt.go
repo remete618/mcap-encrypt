@@ -411,12 +411,14 @@ func parseAttachmentRecord(data []byte) (name, mediaType string, attData []byte,
 	if o+8 > len(data) {
 		return "", "", nil, fmt.Errorf("truncated before data_size")
 	}
-	dataSize := int(binary.LittleEndian.Uint64(data[o:]))
+	// Keep data_size as uint64: an int() cast can turn a hostile high-bit
+	// value negative, defeating the bounds check and panicking the slice.
+	dataSize := binary.LittleEndian.Uint64(data[o:])
 	o += 8
-	if o+dataSize > len(data) {
+	if dataSize > uint64(len(data)-o) {
 		return "", "", nil, fmt.Errorf("truncated in data field")
 	}
-	attData = data[o : o+dataSize]
+	attData = data[o : o+int(dataSize)]
 	return
 }
 

@@ -58,8 +58,18 @@ func ReadRecord(r io.Reader) (opcode byte, data []byte, err error) {
 		return
 	}
 	if length > 0 {
-		data = make([]byte, length)
-		_, err = io.ReadFull(r, data)
+		// Do not pre-allocate the claimed length: a hostile header can
+		// declare up to maxRecordDataSize while supplying far fewer bytes.
+		// LimitReader + ReadAll makes allocation track the bytes actually
+		// present, then we confirm the full record was delivered.
+		data, err = io.ReadAll(io.LimitReader(r, int64(length)))
+		if err != nil {
+			return
+		}
+		if uint64(len(data)) != length {
+			err = fmt.Errorf("record truncated: declared %d bytes, read %d: %w", length, len(data), io.ErrUnexpectedEOF)
+			return
+		}
 	}
 	return
 }
