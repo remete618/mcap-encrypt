@@ -27,7 +27,7 @@ In scope:
 
 Out of scope:
 - Plaintext schema and channel metadata (intentional by design)
-- Attachment content not being encrypted (documented known limitation)
+- Plaintext attachment name and media type fields (intentional; only attachment data is encrypted)
 - Vulnerabilities in dependencies (please report those upstream)
 
 ## Threat model
@@ -43,7 +43,7 @@ The attacker has full read access to the encrypted file and knows all algorithms
 The MCAP summary section (ChunkIndex, Statistics, SummaryOffset) is plaintext and unauthenticated. This is intentional: it allows seekable access and time-range queries without the private key. The authenticated ground truth is the EncryptedChunk stream, not the summary.
 
 **FileID:**
-Every encrypted file carries a random 16-byte FileID embedded in each wrapped-key attachment and bound into the AAD of every EncryptedChunk. Transplanting a wrapped-key attachment from one file to another causes authentication to fail on the first chunk, because the fileID will not match.
+Every encrypted file carries a random 16-byte FileID embedded in each wrapped-key attachment and bound into the AAD of every EncryptedChunk and every EncryptedAttachment. Transplanting records from one file to another causes authentication to fail, because the fileID will not match.
 
 **Format versions:**
 - Version 2 (legacy): manifest attachment is optional on decryption.
@@ -107,7 +107,7 @@ This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256
 
 All tests run on every CI push (`go test -race -count=1 ./...`).
 
-### Go: 57 unit tests, 3 fuzz targets
+### Go: 63 unit tests, 3 fuzz targets
 
 **Round-trip:**
 - RSA-4096-OAEP-SHA-256 key wrapping and unwrapping
@@ -130,10 +130,17 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 
 **Format integrity:**
 - EncryptedChunk opcode (`0x81`) present in output
+- EncryptedAttachment opcode (`0x82`) present in output when source has attachments
 - ChunkIndex (`0x08`) and Statistics (`0x0A`) present in summary section
 - WrappedKeyAttachment and ManifestAttachment present
 - Schema (`0x03`) and Channel (`0x04`) records readable without a key
 - Plaintext Message (`0x05`) absent from encrypted output
+
+**Encrypted attachment integrity:**
+- Attachment data survives encrypt/decrypt round-trip (single and multiple attachments)
+- Attachment data not visible in plaintext inside the encrypted file
+- EncryptedAttachment ciphertext tamper rejected (Poly1305 tag failure)
+- EncryptedAttachment name tamper rejected (AAD mismatch causes tag failure)
 
 **Edge cases:**
 - Empty MCAP input
@@ -144,17 +151,22 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 - Overwrite protection for both encrypt and decrypt
 - Same input and output path rejected
 - Private key material zeroed after use (RSA and X25519)
-- Metadata passthrough, attachment passthrough, header profile preserved
+- Metadata passthrough, header profile preserved
 
 **Fuzz targets:**
 - `FuzzDecodeEncryptedChunk`
 - `FuzzDecodeWrappedKeyData`
 - `FuzzStreamDecrypt` (found INT-2025-001, INT-2025-002, INT-2025-003)
 
-### TypeScript: 22 unit tests
+### TypeScript: 27 unit tests
 
-Covers RSA-4096 and X25519 key wrapping, tamper detection, and format compatibility with the Go implementation.
+Covers RSA-4096 and X25519 key wrapping, tamper detection, encrypted attachment round-trip and tamper rejection, and format compatibility with the Go implementation.
 
-### Cross-language interop: 2 tests
+### Cross-language interop: 4 tests
 
-Go encrypts, TypeScript decrypts. TypeScript encrypts, Go decrypts. Run as a dedicated CI job on every push.
+- Go encrypts, TypeScript decrypts (messages).
+- TypeScript encrypts, Go decrypts (messages).
+- Go encrypts with attachment, TypeScript decrypts (attachment data verified).
+- TypeScript encrypts with attachment, Go decrypts (attachment data verified).
+
+Run as a dedicated CI job on every push.

@@ -1,7 +1,6 @@
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { BinaryReader, BinaryWriter, safeBigintToNumber } from "./binary.js";
 import {
-  MAGIC,
   OP_HEADER,
   OP_SCHEMA,
   OP_CHANNEL,
@@ -12,12 +11,18 @@ import {
   OP_FOOTER,
   OP_METADATA,
   OP_ENCRYPTED_CHUNK,
+  OP_ENCRYPTED_ATTACHMENT,
   readMagic,
   readRecord,
   writeRecord,
   writeMagic,
 } from "./record.js";
 import { encodeEncryptedChunk, type EncryptedChunk } from "./chunk.js";
+import {
+  encryptAttachmentData,
+  encodeEncryptedAttachment,
+  parseAttachmentFields,
+} from "./attachment.js";
 import {
   wrapSymmetricKey,
   spkiFingerprint,
@@ -203,19 +208,18 @@ export async function encryptMcap(
       }
 
       case OP_ATTACHMENT: {
-        // Pass non-key attachments through plaintext. Guard against wrapped-key
-        // attachments from previously encrypted files appearing as input.
-        // Check both name AND media type so a user attachment that happens to
-        // share the name is not silently dropped.
-        const attReader = new BinaryReader(data);
-        attReader.readUint64(); // log_time
-        attReader.readUint64(); // create_time
-        const attName = attReader.readString();
-        const attMediaType = attReader.readString();
-        if (attName !== ATTACHMENT_NAME || attMediaType !== ATTACHMENT_MEDIA_TYPE) {
-          flushPending();
-          writeRecord(writer, OP_ATTACHMENT, data);
+        const { name: attName, mediaType: attMediaType, logTime, createTime, attData } =
+          parseAttachmentFields(new Uint8Array(data));
+        // Drop encryption-framework attachments from previously encrypted inputs.
+        if (
+          (attName === ATTACHMENT_NAME && attMediaType === ATTACHMENT_MEDIA_TYPE) ||
+          (attName === MANIFEST_ATTACHMENT_NAME && attMediaType === MANIFEST_ATTACHMENT_MEDIA_TYPE)
+        ) {
+          break;
         }
+        flushPending();
+        const ea = encryptAttachmentData(attData, symKey, fileId, attName, attMediaType, logTime, createTime);
+        writeRecord(writer, OP_ENCRYPTED_ATTACHMENT, encodeEncryptedAttachment(ea));
         break;
       }
 

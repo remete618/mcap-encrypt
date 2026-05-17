@@ -403,6 +403,91 @@ func TestReadRecordAtLimit(t *testing.T) {
 		"the limit itself should not be rejected by the size guard; failure must be io.ReadFull")
 }
 
+// findEncryptedAttachment locates the first 0x82 record in raw MCAP bytes.
+// Returns the byte offset of the record's data field and the data length.
+func findEncryptedAttachment(t *testing.T, data []byte) (dataStart, dataLen int) {
+	t.Helper()
+	pos := 8
+	for pos+9 <= len(data) {
+		opcode := data[pos]
+		n := int(binary.LittleEndian.Uint64(data[pos+1:]))
+		if opcode == mcapencrypt.OpcodeEncryptedAttachment {
+			return pos + 9, n
+		}
+		pos += 9 + n
+	}
+	t.Fatal("no EncryptedAttachment (0x82) found")
+	return 0, 0
+}
+
+// TestEncryptedAttachmentCiphertextTamperRejected flips a byte in the
+// EncryptedData field; AEAD must reject decryption.
+func TestEncryptedAttachmentCiphertextTamperRejected(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithAttachment(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	raw, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+	dataStart, dataLen := findEncryptedAttachment(t, raw)
+
+	// Decode the record to find the EncryptedData bytes offset.
+	ea, err := mcapencrypt.DecodeEncryptedAttachment(raw[dataStart : dataStart+dataLen])
+	require.NoError(t, err)
+
+	// Calculate byte offset of encrypted_data payload within the record:
+	// name(4+len) + media_type(4+len) + log_time(8) + create_time(8) + nonce(4+24) + encrypted_data_len(4)
+	encDataOffset := dataStart + 4 + len(ea.Name) + 4 + len(ea.MediaType) + 8 + 8 + 4 + len(ea.Nonce) + 4
+
+	tampered := make([]byte, len(raw))
+	copy(tampered, raw)
+	tampered[encDataOffset] ^= 0xFF
+
+	require.NoError(t, os.WriteFile(encPath, tampered, 0o644))
+	err = mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "authentication failed")
+}
+
+// TestEncryptedAttachmentNameTamperRejected changes the plaintext name field;
+// since name is part of the AAD, decryption must fail.
+func TestEncryptedAttachmentNameTamperRejected(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithAttachment(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	raw, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+	dataStart, dataLen := findEncryptedAttachment(t, raw)
+	ea, err := mcapencrypt.DecodeEncryptedAttachment(raw[dataStart : dataStart+dataLen])
+	require.NoError(t, err)
+	require.Equal(t, "config.json", ea.Name, "test fixture must produce attachment named config.json")
+
+	// Flip one byte inside the name string (name length prefix is 4 bytes).
+	// "config.json" → flip 'c' → the AAD name will differ from the one used at encrypt time.
+	nameOffset := dataStart + 4
+	tampered := make([]byte, len(raw))
+	copy(tampered, raw)
+	tampered[nameOffset] ^= 0x01
+
+	require.NoError(t, os.WriteFile(encPath, tampered, 0o644))
+	err = mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "authentication failed")
+}
+
 func TestNonChunkedInputRejected(t *testing.T) {
 	dir := t.TempDir()
 	flatPath := filepath.Join(dir, "flat.mcap")

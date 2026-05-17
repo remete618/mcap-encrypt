@@ -232,16 +232,19 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string, progress .
 			if readErr != nil {
 				return readErr
 			}
-			// Skip wrapped-key attachments from previously encrypted inputs.
-			// Check both name AND media type so a legitimate user attachment that
-			// happens to share the name is not silently dropped.
-			if ar.Name == AttachmentName && ar.MediaType == AttachmentMediaType {
+			// Drop encryption-framework attachments from previously encrypted inputs.
+			if (ar.Name == AttachmentName && ar.MediaType == AttachmentMediaType) ||
+				(ar.Name == ManifestAttachmentName && ar.MediaType == ManifestAttachmentMediaType) {
 				return nil
 			}
 			if err := flushPending(); err != nil {
 				return err
 			}
-			return WriteRecord(tmpFile, opcodeAttach, buildAttachmentBytes(ar.LogTime, ar.CreateTime, ar.Name, ar.MediaType, data))
+			ea, encErr := encryptAttachmentData(data, symKey, fileID, ar.Name, ar.MediaType, ar.LogTime, ar.CreateTime)
+			if encErr != nil {
+				return fmt.Errorf("encrypt attachment %q: %w", ar.Name, encErr)
+			}
+			return WriteRecord(tmpFile, OpcodeEncryptedAttachment, ea.Encode())
 		},
 	})
 	if err != nil {

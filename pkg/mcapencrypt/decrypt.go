@@ -278,6 +278,31 @@ scan:
 			defer clear(symKey)
 			fileID = wkd.FileID
 
+		case OpcodeEncryptedAttachment:
+			if symKey == nil {
+				// Key attachment must precede encrypted attachments; skip until key is found.
+				// This mirrors the encrypted-chunk-before-key error path.
+				continue
+			}
+			ea, decErr := DecodeEncryptedAttachment(data)
+			if decErr != nil {
+				return fmt.Errorf("decode encrypted attachment: %w", decErr)
+			}
+			plain, decErr := decryptAttachmentData(ea, symKey, fileID)
+			if decErr != nil {
+				return fmt.Errorf("decrypt attachment %q: %w", ea.Name, decErr)
+			}
+			plainData := make([]byte, len(plain))
+			copy(plainData, plain)
+			attachments = append(attachments, &mcap.Attachment{
+				LogTime:    ea.LogTime,
+				CreateTime: ea.CreateTime,
+				Name:       ea.Name,
+				MediaType:  ea.MediaType,
+				DataSize:   uint64(len(plainData)),
+				Data:       bytes.NewReader(plainData),
+			})
+
 		case OpcodeEncryptedChunk:
 			if symKey == nil {
 				if wkaCount == 0 {

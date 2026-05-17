@@ -14,7 +14,8 @@ const (
 	// corrupt or adversarial input and must not be passed to make().
 	maxRecordDataSize = 1 << 32
 
-	OpcodeEncryptedChunk = byte(0x81)
+	OpcodeEncryptedChunk      = byte(0x81)
+	OpcodeEncryptedAttachment = byte(0x82)
 
 	opcodeHeader        = byte(0x01)
 	opcodeFooter        = byte(0x02)

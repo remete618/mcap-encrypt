@@ -3,6 +3,7 @@ package mcapencrypt_test
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -529,4 +530,131 @@ func TestEncryptedChunkOpcodePresent(t *testing.T) {
 		pos += 9 + n
 	}
 	require.True(t, found, "encrypted file must contain at least one EncryptedChunk (0x81)")
+}
+
+// buildTestMCAPWithTwoAttachments writes a MCAP with two distinct user attachments.
+func buildTestMCAPWithTwoAttachments(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer f.Close()
+	w, err := mcap.NewWriter(f, &mcap.WriterOptions{Chunked: true, ChunkSize: 4096, Compression: mcap.CompressionZSTD})
+	require.NoError(t, err)
+	require.NoError(t, w.WriteHeader(&mcap.Header{Profile: "test"}))
+	require.NoError(t, w.WriteSchema(&mcap.Schema{ID: 1, Name: "s", Encoding: "json", Data: []byte("{}")}))
+	require.NoError(t, w.WriteChannel(&mcap.Channel{ID: 1, SchemaID: 1, Topic: "/t", MessageEncoding: "json"}))
+	require.NoError(t, w.WriteMessage(&mcap.Message{ChannelID: 1, LogTime: 1_000, Data: []byte(`{}`)}))
+	p1 := []byte(`{"sensor":"lidar"}`)
+	require.NoError(t, w.WriteAttachment(&mcap.Attachment{LogTime: 100, Name: "calibration.json", MediaType: "application/json", DataSize: uint64(len(p1)), Data: bytes.NewReader(p1)}))
+	p2 := []byte("firmware v1.2.3")
+	require.NoError(t, w.WriteAttachment(&mcap.Attachment{LogTime: 200, Name: "firmware.bin", MediaType: "application/octet-stream", DataSize: uint64(len(p2)), Data: bytes.NewReader(p2)}))
+	require.NoError(t, w.Close())
+}
+
+// readDecryptedAttachments returns name→data pairs from a standard (decrypted) MCAP.
+func readDecryptedAttachments(t *testing.T, path string) map[string][]byte {
+	t.Helper()
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	defer f.Close()
+	r, err := mcap.NewReader(f)
+	require.NoError(t, err)
+	info, err := r.Info()
+	require.NoError(t, err)
+	result := make(map[string][]byte)
+	for _, idx := range info.AttachmentIndexes {
+		ar, readErr := r.GetAttachmentReader(idx.Offset)
+		require.NoError(t, readErr)
+		data, readErr := io.ReadAll(ar.Data())
+		require.NoError(t, readErr)
+		result[idx.Name] = data
+	}
+	return result
+}
+
+// TestEncryptedAttachmentRoundTrip verifies that an attachment's data is
+// faithfully preserved through encrypt → decrypt.
+func TestEncryptedAttachmentRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithAttachment(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
+
+	got := readDecryptedAttachments(t, decPath)
+	require.Contains(t, got, "config.json")
+	require.Equal(t, []byte(`{"k":"v"}`), got["config.json"])
+}
+
+// TestMultipleEncryptedAttachmentsRoundTrip verifies all attachments survive
+// when a file has more than one.
+func TestMultipleEncryptedAttachmentsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithTwoAttachments(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
+
+	got := readDecryptedAttachments(t, decPath)
+	require.Equal(t, []byte(`{"sensor":"lidar"}`), got["calibration.json"])
+	require.Equal(t, []byte("firmware v1.2.3"), got["firmware.bin"])
+}
+
+// TestAttachmentDataNotPlaintextInEncryptedFile verifies that attachment data
+// is ciphertext in the encrypted file; the raw content must not appear verbatim.
+func TestAttachmentDataNotPlaintextInEncryptedFile(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithAttachment(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	encData, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+
+	// Attachment name is intentionally plaintext (allows enumeration without key).
+	require.True(t, bytes.Contains(encData, []byte("config.json")), "attachment name must remain plaintext")
+	// Attachment data must not appear verbatim.
+	require.False(t, bytes.Contains(encData, []byte(`{"k":"v"}`)), "attachment data must be encrypted")
+}
+
+// TestEncryptedAttachmentOpcodePresent verifies 0x82 records appear in the output
+// and that no user attachment (0x09 with a non-framework name) is present in plaintext.
+func TestEncryptedAttachmentOpcodePresent(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithAttachment(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	data, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+
+	foundEncAtt := false
+	pos := 8
+	for pos+9 <= len(data) {
+		opcode := data[pos]
+		n := int(binary.LittleEndian.Uint64(data[pos+1:]))
+		if opcode == mcapencrypt.OpcodeEncryptedAttachment {
+			foundEncAtt = true
+		}
+		pos += 9 + n
+	}
+	require.True(t, foundEncAtt, "encrypted file must contain at least one EncryptedAttachment (0x82)")
 }

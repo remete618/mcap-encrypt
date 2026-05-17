@@ -11,10 +11,12 @@ import {
   OP_MESSAGE,
   OP_METADATA,
   OP_ENCRYPTED_CHUNK,
+  OP_ENCRYPTED_ATTACHMENT,
   readMagic,
   readRecord,
 } from "./record.js";
 import { decodeEncryptedChunk } from "./chunk.js";
+import { decodeEncryptedAttachment, decryptAttachmentData } from "./attachment.js";
 import {
   ATTACHMENT_NAME,
   ATTACHMENT_MEDIA_TYPE,
@@ -478,6 +480,9 @@ async function* streamMessages(
         chunkIdx++;
         break;
       }
+      case OP_ENCRYPTED_ATTACHMENT:
+        // Attachments are not messages; iterateMessages intentionally skips them.
+        break;
       case OP_FOOTER:
         break scan;
     }
@@ -557,6 +562,22 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
         }
         messages.push(...(await decryptAndVerifyChunk(new Uint8Array(data), unwrapped.symKey, unwrapped.fileId, chunkIdx)));
         chunkIdx++;
+        break;
+      }
+      case OP_ENCRYPTED_ATTACHMENT: {
+        if (!unwrapped) break; // key not yet found; skip (error raised after scan)
+        const ea = decodeEncryptedAttachment(new Uint8Array(data));
+        const plain = decryptAttachmentData(ea, unwrapped.symKey, unwrapped.fileId);
+        // Re-encode as a standard MCAP Attachment so buildIndexedMcap can write it.
+        const w = new BinaryWriter();
+        w.writeUint64(ea.logTime);
+        w.writeUint64(ea.createTime);
+        w.writeString(ea.name);
+        w.writeString(ea.mediaType);
+        w.writeUint64(BigInt(plain.length));
+        w.writeBytes(plain);
+        w.writeUint32(0); // crc = 0
+        plainAttachments.push(w.toUint8Array());
         break;
       }
       case OP_FOOTER:

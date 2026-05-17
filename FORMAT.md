@@ -1,19 +1,20 @@
 # mcap-encrypt File Format Specification
 
-Version: **4** (current)
+Version: **5** (current)
 
 ---
 
 ## Overview
 
 An encrypted MCAP file is a valid MCAP file. It uses the standard MCAP container
-(magic bytes, record framing, footer) with three additions:
+(magic bytes, record framing, footer) with four additions:
 
 1. A custom `EncryptedChunk` record (opcode `0x81`) replaces every standard `Chunk`.
-2. One or more `Attachment` records carry the wrapped symmetric key, one per recipient.
-3. One `Attachment` record carries the file manifest (chunk count + HMAC), enabling truncation detection.
+2. A custom `EncryptedAttachment` record (opcode `0x82`) replaces every user `Attachment`.
+3. One or more `Attachment` records carry the wrapped symmetric key, one per recipient.
+4. One `Attachment` record carries the file manifest (chunk count + HMAC), enabling truncation detection.
 
-Standard MCAP readers that do not know opcode `0x81` will skip encrypted chunks and
+Standard MCAP readers that do not know opcodes `0x81` or `0x82` will skip those records and
 see only schemas, channels, and the key attachments in plaintext.
 
 ---
@@ -26,8 +27,9 @@ see only schemas, channels, and the key attachments in plaintext.
 <Schema records>                     opcode 0x03  — one per channel schema
 <Channel records>                    opcode 0x04  — one per topic
 <WrappedKey Attachment records>      opcode 0x09  — one per recipient
-<Manifest Attachment record>         opcode 0x09  — exactly one
 <EncryptedChunk records>             opcode 0x81  — one per original chunk
+<EncryptedAttachment records>        opcode 0x82  — one per user attachment (interleaved with chunks)
+<Manifest Attachment record>         opcode 0x09  — exactly one, written just before DataEnd
 <DataEnd record>                     opcode 0x0F
 <Summary section>                    — schemas, channels, Statistics, ChunkIndex records
 <Footer record>                      opcode 0x02  — summary_start points to summary section
@@ -74,6 +76,40 @@ Replaces a standard `Chunk`. Fields are little-endian.
 
 `string` encoding: 4-byte LE length prefix followed by UTF-8 bytes.
 `bytes` encoding: 4-byte LE length prefix followed by the raw bytes.
+
+---
+
+## EncryptedAttachment record (opcode 0x82)
+
+Replaces a user-provided standard `Attachment` (opcode `0x09`). The attachment
+name and media type are stored **in plaintext** so readers can enumerate or filter
+attachments by metadata without needing the private key. Only the attachment data is
+encrypted.
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Attachment name (plaintext) |
+| `media_type` | `string` | Media type (plaintext) |
+| `log_time` | `uint64 LE` | Log timestamp (nanoseconds, plaintext) |
+| `create_time` | `uint64 LE` | Creation timestamp (nanoseconds, plaintext) |
+| `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
+| `encrypted_data` | `bytes` | Ciphertext of the attachment data including the 16-byte Poly1305 tag (4-byte LE length prefix + N bytes) |
+
+### Attachment AAD
+
+The **AEAD additional data** for each attachment is:
+
+```
+file_id       bytes[16]   (no length prefix)
+name          string      4-byte LE length prefix + UTF-8 bytes
+media_type    string      4-byte LE length prefix + UTF-8 bytes
+log_time      uint64 LE
+create_time   uint64 LE
+```
+
+Binding `file_id` prevents transplanting an attachment from one file to another.
+Binding `name`, `media_type`, `log_time`, and `create_time` prevents silent
+renaming or timestamp alteration of the plaintext metadata fields.
 
 ---
 
@@ -180,8 +216,9 @@ XChaCha20-Poly1305 as described in the WrappedKey section above.
 | 2 | AAD expanded to include `file_id`, `chunk_index`, `key_id`, `compression`, `uncompressed_size`, and `uncompressed_crc`. `file_id` added to `WrappedKeyData`. Multi-recipient support. |
 | 3 | `key_id` field in `EncryptedChunk` renamed to `slot_id` (wire value unchanged: `"key-1"`). Added `Manifest Attachment` for truncation detection. Added X25519 key-wrapping algorithm. RSA key size upgraded to 4096 bits. |
 | 4 | Added summary section after `DataEnd`. Footer `summary_start` now points to a real summary containing `Schema`, `Channel`, `Statistics`, `ChunkIndex`, and `SummaryOffset` records. `ChunkIndex` entries point to `EncryptedChunk` records, enabling O(log n) time-range seeking without decryption. |
+| 5 | Added `EncryptedAttachment` record (opcode `0x82`). User attachments are now encrypted; name and media type remain plaintext. Attachment data is protected with XChaCha20-Poly1305 using per-attachment nonces and AAD that binds `file_id`, `name`, `media_type`, `log_time`, and `create_time`. |
 
 Version 1 files are rejected by this implementation. Version 2 files decrypt correctly
 (manifest verification is skipped when the manifest attachment is absent). Version 3
 files decrypt correctly (summary section is absent; decoders fall back to linear scan).
-Re-encrypt to upgrade.
+Version 4 files decrypt correctly. Re-encrypt to upgrade.

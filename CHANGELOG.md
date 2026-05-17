@@ -15,6 +15,7 @@ All notable changes to this project are documented here.
 - TypeScript key material not-zeroed limitation documented in `.github/SECURITY.md` (JS runtime provides no guaranteed memory-wipe primitive).
 
 ### Added
+- **Encrypted attachments (format v5)**: User attachments are now encrypted with XChaCha20-Poly1305 and stored as `EncryptedAttachment` records (opcode `0x82`). Attachment data is fully opaque to readers without the private key. Attachment name, media type, and timestamps remain plaintext for enumeration without a key. AAD binds `file_id`, `name`, `media_type`, `log_time`, and `create_time`, preventing cross-file transplant and rename attacks.
 - **X25519-HKDF-XChaCha20Poly1305 key wrapping**: `GenerateX25519KeyPair`, `WrapSymmetricKeyX25519`, `UnwrapSymmetricKeyX25519`. Any file can have a mix of RSA and X25519 recipients.
 - **Format v3**: manifest attachment required on decrypt; decrypting a v3 file without the manifest returns an error. Prevents strip attacks. All files written by this library use v3.
 - **Manifest HMAC**: HMAC-SHA-256 over `chunkCount || fileID` detects tail truncation and chunk removal.
@@ -36,7 +37,7 @@ All notable changes to this project are documented here.
 - LZ4-compressed chunks transparently re-compressed as zstd on encrypt (JS-compatible). TypeScript rejects LZ4 source files.
 - Encrypted output no longer carries the source MCAP index; decrypted output is fully re-indexed.
 
-### Tests (Go: 57 unit tests, 3 fuzz targets; TypeScript: 22; interop: 2)
+### Tests (Go: 63 unit tests, 3 fuzz targets; TypeScript: 27; interop: 4)
 - Nonce uniqueness across all chunks in a file.
 - All AAD fields independently tampered (message_start_time, message_end_time, uncompressed_size, uncompressed_crc, slot_id, compression).
 - FileID tampered in the wrapped-key attachment (caught by chunk AAD mismatch).
@@ -47,6 +48,10 @@ All notable changes to this project are documented here.
 - `writeChunkMessages` oversized inner record (uint64 overflow guard), off-by-one, truncated header.
 - `GenerateKeyPair` / `GenerateX25519KeyPair` refuse to overwrite existing key files.
 - `ReadRecord` oversized length field rejected; at-limit value accepted.
+- Encrypted attachment round-trip (single and multiple attachments, Go and TypeScript).
+- Encrypted attachment ciphertext tamper rejected; plaintext name tamper detected via AAD.
+- Attachment data not visible in plaintext inside the encrypted file.
+- Interop: Go encrypts with attachment, TypeScript decrypts (and vice versa).
 
 ---
 

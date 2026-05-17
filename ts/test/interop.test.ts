@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { encryptMcap, decryptMcap } from "../src/index.js";
-import { buildTestMcap, collectMessages, assertMessagesMatch } from "./helpers.js";
+import { buildTestMcap, buildTestMcapWithAttachment, collectMessages, assertMessagesMatch } from "./helpers.js";
+import { BinaryReader } from "../src/binary.js";
 
 // Repo root is two levels up from ts/test/
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../../..");
@@ -120,3 +121,93 @@ describe("interop: TypeScript → Go", () => {
     assertMessagesMatch(got, expected);
   }, 90_000);
 });
+
+describe("interop: attachment round-trip Go → TS", () => {
+  it("TypeScript decrypts attachment data encrypted by Go", async () => {
+    if (!goBin) {
+      console.warn("Go not found, skipping interop test");
+      return;
+    }
+
+    const plainWithAtt = buildTestMcapWithAttachment();
+    writeFileSync(join(tmpDir, "plain-att.mcap"), plainWithAtt);
+
+    runGo(goBin, [
+      "run", "./cmd/mcap-encrypt",
+      "encrypt", "--key", join(tmpDir, "key.pub.pem"),
+      join(tmpDir, "plain-att.mcap"), join(tmpDir, "enc-att-go.mcap"),
+    ]);
+
+    const encBytes = readFileSync(join(tmpDir, "enc-att-go.mcap"));
+    const decBytes = await decryptMcap(new Uint8Array(encBytes), privKeyPem);
+
+    const names = readDecryptedAttachmentNames(decBytes);
+    expect(names).toContain("config.json");
+    const attData = readDecryptedAttachmentData(decBytes, "config.json");
+    expect(new TextDecoder().decode(attData)).toBe('{"k":"v"}');
+  }, 90_000);
+});
+
+describe("interop: attachment round-trip TS → Go", () => {
+  it("Go decrypts attachment data encrypted by TypeScript", async () => {
+    if (!goBin) {
+      console.warn("Go not found, skipping interop test");
+      return;
+    }
+
+    const plainWithAtt = buildTestMcapWithAttachment();
+    const encBytes = await encryptMcap(plainWithAtt, pubKeyPem);
+    writeFileSync(join(tmpDir, "enc-att-ts.mcap"), encBytes);
+
+    runGo(goBin, [
+      "run", "./cmd/mcap-encrypt",
+      "decrypt", "--key", join(tmpDir, "key.priv.pem"),
+      join(tmpDir, "enc-att-ts.mcap"), join(tmpDir, "dec-att-go.mcap"),
+    ]);
+
+    const decBytes = readFileSync(join(tmpDir, "dec-att-go.mcap"));
+    const names = readDecryptedAttachmentNames(new Uint8Array(decBytes));
+    expect(names).toContain("config.json");
+    const attData = readDecryptedAttachmentData(new Uint8Array(decBytes), "config.json");
+    expect(new TextDecoder().decode(attData)).toBe('{"k":"v"}');
+  }, 90_000);
+});
+
+// Scan a standard (decrypted) MCAP for plaintext Attachment (0x09) record names.
+function readDecryptedAttachmentNames(mcap: Uint8Array): string[] {
+  const view = new DataView(mcap.buffer, mcap.byteOffset);
+  const names: string[] = [];
+  let pos = 8;
+  while (pos + 9 <= mcap.length) {
+    const opcode = mcap[pos]!;
+    const length = Number(view.getBigUint64(pos + 1, true));
+    if (opcode === 0x09) {
+      const r = new BinaryReader(mcap.slice(pos + 9, pos + 9 + length));
+      r.readUint64(); r.readUint64(); // log_time, create_time
+      names.push(r.readString());
+    }
+    pos += 9 + length;
+  }
+  return names;
+}
+
+// Returns the data bytes of a named attachment from a standard (decrypted) MCAP.
+function readDecryptedAttachmentData(mcap: Uint8Array, targetName: string): Uint8Array {
+  const view = new DataView(mcap.buffer, mcap.byteOffset);
+  let pos = 8;
+  while (pos + 9 <= mcap.length) {
+    const opcode = mcap[pos]!;
+    const length = Number(view.getBigUint64(pos + 1, true));
+    if (opcode === 0x09) {
+      const r = new BinaryReader(mcap.slice(pos + 9, pos + 9 + length));
+      r.readUint64(); r.readUint64(); // log_time, create_time
+      const name = r.readString();
+      r.readString(); // media_type
+      const dataSize = Number(r.readUint64());
+      const data = new Uint8Array(r.readBytes(dataSize));
+      if (name === targetName) return data;
+    }
+    pos += 9 + length;
+  }
+  throw new Error(`attachment "${targetName}" not found in decrypted MCAP`);
+}
