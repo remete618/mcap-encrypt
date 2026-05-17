@@ -13,7 +13,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { encryptMcap, decryptMcap } from "../src/index.js";
+import { encryptMcap, decryptMcap, generateX25519KeyPair } from "../src/index.js";
 import { buildTestMcap, buildTestMcapWithAttachment, collectMessages, assertMessagesMatch } from "./helpers.js";
 import { BinaryReader } from "../src/binary.js";
 
@@ -170,6 +170,67 @@ describe("interop: attachment round-trip TS → Go", () => {
     expect(names).toContain("config.json");
     const attData = readDecryptedAttachmentData(new Uint8Array(decBytes), "config.json");
     expect(new TextDecoder().decode(attData)).toBe('{"k":"v"}');
+  }, 90_000);
+});
+
+describe("interop X25519: Go → TypeScript", () => {
+  it("TypeScript decrypts a file encrypted by Go with an X25519 key", async () => {
+    if (!goBin) {
+      console.warn("Go not found, skipping interop test");
+      return;
+    }
+
+    // Generate X25519 key pair in TypeScript, write to disk for Go CLI.
+    const x25519Keys = await generateX25519KeyPair();
+    const x25519PubPath = join(tmpDir, "x25519-go.pub.pem");
+    const x25519PrivPath = join(tmpDir, "x25519-go.priv.pem");
+    writeFileSync(x25519PubPath, x25519Keys.publicKeyPem);
+    writeFileSync(x25519PrivPath, x25519Keys.privateKeyPem);
+
+    runGo(goBin, [
+      "run", "./cmd/mcap-encrypt",
+      "encrypt", "--key", x25519PubPath,
+      join(tmpDir, "plain.mcap"), join(tmpDir, "enc-go-x25519.mcap"),
+    ]);
+
+    const encBytes = readFileSync(join(tmpDir, "enc-go-x25519.mcap"));
+    const decBytes = await decryptMcap(new Uint8Array(encBytes), x25519Keys.privateKeyPem);
+
+    const got = collectMessages(decBytes);
+    const expected = collectMessages(testMcap);
+    expect(got).toHaveLength(100);
+    assertMessagesMatch(got, expected);
+  }, 90_000);
+});
+
+describe("interop X25519: TypeScript → Go", () => {
+  it("Go CLI decrypts a file encrypted by TypeScript with an X25519 key", async () => {
+    if (!goBin) {
+      console.warn("Go not found, skipping interop test");
+      return;
+    }
+
+    // Generate X25519 key pair in TypeScript, write to disk for Go CLI.
+    const x25519Keys = await generateX25519KeyPair();
+    const x25519PubPath = join(tmpDir, "x25519-ts.pub.pem");
+    const x25519PrivPath = join(tmpDir, "x25519-ts.priv.pem");
+    writeFileSync(x25519PubPath, x25519Keys.publicKeyPem);
+    writeFileSync(x25519PrivPath, x25519Keys.privateKeyPem);
+
+    const encBytes = await encryptMcap(testMcap, x25519Keys.publicKeyPem);
+    writeFileSync(join(tmpDir, "enc-ts-x25519.mcap"), encBytes);
+
+    runGo(goBin, [
+      "run", "./cmd/mcap-encrypt",
+      "decrypt", "--key", x25519PrivPath,
+      join(tmpDir, "enc-ts-x25519.mcap"), join(tmpDir, "dec-go-x25519.mcap"),
+    ]);
+
+    const decBytes = readFileSync(join(tmpDir, "dec-go-x25519.mcap"));
+    const got = collectMessages(new Uint8Array(decBytes));
+    const expected = collectMessages(testMcap);
+    expect(got).toHaveLength(100);
+    assertMessagesMatch(got, expected);
   }, 90_000);
 });
 

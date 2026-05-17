@@ -40,6 +40,8 @@
   "homepage": "https://github.com/remete618/mcap-encrypt#readme",
   "dependencies": {
     "@noble/ciphers": "^2.0.0",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "fzstd": "^0.1.1"
   },
   "devDependencies": {

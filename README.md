@@ -181,7 +181,7 @@ X25519 elliptic-curve Diffie-Hellman offers 128-bit security with 32-byte keys, 
 
 ### Test coverage
 
-The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by automated interop tests (Go encrypts, TypeScript decrypts; TypeScript encrypts, Go decrypts; both directions with attachments) run on every CI push.
+The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 6 automated interop tests (RSA and X25519 in both directions, with and without attachments) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation.
 
 ### Audit status
 
@@ -362,11 +362,12 @@ if err := mcapencrypt.ServeBridge(ctx, state, "localhost:8765"); err != nil { ..
 ## TypeScript library
 
 ```typescript
-import { generateKeyPair, encryptMcap, decryptMcap, iterateMessages } from "mcap-encrypt";
+import { generateKeyPair, generateX25519KeyPair, encryptMcap, decryptMcap, iterateMessages } from "mcap-encrypt";
 import { readFileSync, writeFileSync } from "node:fs";
 
-// Generate a key pair (in-memory PEM strings)
-const { publicKeyPem, privateKeyPem } = await generateKeyPair();
+// Generate a key pair — RSA-4096 or X25519
+const { publicKeyPem, privateKeyPem } = await generateKeyPair();        // RSA-4096
+const { publicKeyPem: x25519Pub, privateKeyPem: x25519Priv } = await generateX25519KeyPair(); // X25519
 
 // Encrypt for a single recipient
 const plain = new Uint8Array(readFileSync("input.mcap"));
@@ -392,8 +393,9 @@ for await (const { schema, channel, message } of iterateMessages(enc, privateKey
 | Export | Signature | Description |
 |---|---|---|
 | `generateKeyPair` | `() => Promise<KeyPair>` | Generates RSA-4096 key pair, returns PEM strings. |
-| `encryptMcap` | `(input: Uint8Array, pubKeyPem: string \| string[]) => Promise<Uint8Array>` | Encrypts a chunked MCAP in memory. Pass an array for multi-recipient. |
-| `decryptMcap` | `(input: Uint8Array, privKeyPem: string) => Promise<Uint8Array>` | Decrypts to a fully-indexed MCAP buffer with ChunkIndex and summary section. |
+| `generateX25519KeyPair` | `() => Promise<X25519KeyPair>` | Generates X25519 key pair, returns PEM strings. |
+| `encryptMcap` | `(input: Uint8Array, pubKeyPem: string \| string[]) => Promise<Uint8Array>` | Encrypts a chunked MCAP in memory. Accepts RSA and X25519 public keys; mixed arrays are supported. |
+| `decryptMcap` | `(input: Uint8Array, privKeyPem: string) => Promise<Uint8Array>` | Decrypts to a fully-indexed MCAP buffer with ChunkIndex and summary section. Accepts RSA and X25519 private keys. |
 | `iterateMessages` | `(input: Uint8Array, privKeyPem: string) => AsyncGenerator<{schema, channel, message}>` | Streams decrypted messages without materializing output. |
 
 **Browser compatibility:** Uses the Web Crypto API and `fzstd` (pure-TypeScript zstd). No WASM, no Node-specific APIs. Works in Chromium 89+, Firefox 90+, Safari 15+.
@@ -416,13 +418,15 @@ mcap-encrypt decrypt --key mykey.priv.pem ts-enc.mcap output.mcap
 
 Both implementations agree on:
 - XChaCha20-Poly1305 nonce size (24 bytes), key size (32 bytes)
-- AEAD AAD v2 encoding: `file_id` (16 bytes) + `chunk_index` (uint64 LE) + `slot_id` + `compression` + `uncompressed_size` (uint64 LE) + `uncompressed_crc` (uint32 LE) + `message_start_time` (uint64 LE) + `message_end_time` (uint64 LE)
+- AEAD AAD encoding: `file_id` (16 bytes) + `chunk_index` (uint64 LE) + `slot_id` + `compression` + `uncompressed_size` (uint64 LE) + `uncompressed_crc` (uint32 LE) + `message_start_time` (uint64 LE) + `message_end_time` (uint64 LE)
 - RSA-4096-OAEP-SHA-256 key wrapping (RSA recipients)
+- X25519-HKDF-SHA256-XChaCha20Poly1305 key wrapping (X25519 recipients): HKDF salt `nil` (RFC 5869 default = 32 zero bytes), info string `"mcap-encrypt x25519 v1"`, wire format `ephem_pub(32) || nonce(24) || ciphertext(48)`
 - `EncryptedChunk` wire format (opcode `0x81`)
+- `EncryptedAttachment` wire format (opcode `0x82`)
 - Wrapped key attachment format (version `0x03`, 16-byte `file_id`, length-prefixed fields; `0x02` is accepted for legacy read-back)
-- PKCS#8 private key format (PEM label `PRIVATE KEY`)
+- PKCS#8 private key format (PEM label `PRIVATE KEY`) and SPKI public key format (PEM label `PUBLIC KEY`) for both RSA and X25519 keys
 
-**Key wrapping scope:** The TypeScript library supports **RSA recipients only**. X25519 key wrapping and unwrapping is Go-only. A file encrypted with an X25519 public key cannot be decrypted by the TypeScript library. Use the Go CLI when X25519 recipients are involved.
+Both implementations support **RSA-4096 and X25519 recipients**. Files encrypted with either key type can be encrypted and decrypted by both the Go library and the TypeScript library. Mixed-algorithm recipient lists (RSA + X25519 in the same file) are supported by both.
 
 Cross-language compatibility is verified by automated interop tests run on every CI push.
 
@@ -658,7 +662,6 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 |---|---|---|
 | **In-memory only** | The TypeScript API holds the entire file in a `Uint8Array`. | Use the Go CLI for files larger than available RAM. |
 | **No LZ4 support** | `encryptMcap()` throws if any source chunk uses LZ4 compression. | Use the Go CLI to encrypt LZ4 source files; it normalizes to zstd automatically. |
-| **RSA recipients only** | The TypeScript library does not support X25519 key wrapping or unwrapping. Files encrypted with an X25519 public key cannot be decrypted by TypeScript. | Use the Go CLI for X25519 recipients. |
 
 ### Roadmap
 

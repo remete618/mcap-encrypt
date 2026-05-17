@@ -1,3 +1,7 @@
+import { x25519 } from "@noble/curves/ed25519.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha256.js";
+import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { BinaryReader, BinaryWriter } from "./binary.js";
 
 export const ATTACHMENT_NAME = "mcap_encryption_key";
@@ -83,6 +87,131 @@ export function derToPem(label: string, der: ArrayBuffer): string {
   return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----\n`;
 }
 
+// X25519 SPKI DER header (12 bytes), followed by 32 bytes of raw public key.
+// SEQUENCE { SEQUENCE { OID 1.3.101.110 } BIT_STRING { 0x00 <32 bytes> } }
+const X25519_SPKI_HEADER = new Uint8Array([
+  0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00,
+]);
+// X25519 PKCS8 DER header (16 bytes), followed by 32 bytes of raw private key.
+// SEQUENCE { INTEGER 0; SEQUENCE { OID 1.3.101.110 }; OCTET_STRING { OCTET_STRING { <32 bytes> } } }
+const X25519_PKCS8_HEADER = new Uint8Array([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
+]);
+// X25519 OID bytes used for key type detection in a SPKI DER blob.
+const X25519_OID = new Uint8Array([0x06, 0x03, 0x2b, 0x65, 0x6e]);
+
+function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
+  outer: for (let i = 0; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+// isX25519PublicKeyPem returns true if the PEM encodes an X25519 SPKI public key.
+export function isX25519PublicKeyPem(publicKeyPem: string): boolean {
+  return containsBytes(pemToDer(publicKeyPem), X25519_OID);
+}
+
+function x25519RawPubFromSpkiDer(der: Uint8Array): Uint8Array {
+  const expectedLen = X25519_SPKI_HEADER.length + 32;
+  if (der.length !== expectedLen) {
+    throw new Error(`X25519 SPKI DER must be ${expectedLen} bytes, got ${der.length}`);
+  }
+  for (let i = 0; i < X25519_SPKI_HEADER.length; i++) {
+    if (der[i] !== X25519_SPKI_HEADER[i]) {
+      throw new Error("not a valid X25519 SPKI public key");
+    }
+  }
+  return der.slice(X25519_SPKI_HEADER.length);
+}
+
+function x25519RawPrivFromPkcs8Der(der: Uint8Array): Uint8Array {
+  const expectedLen = X25519_PKCS8_HEADER.length + 32;
+  if (der.length !== expectedLen) {
+    throw new Error(`X25519 PKCS8 DER must be ${expectedLen} bytes, got ${der.length}`);
+  }
+  for (let i = 0; i < X25519_PKCS8_HEADER.length; i++) {
+    if (der[i] !== X25519_PKCS8_HEADER[i]) {
+      throw new Error("not a valid X25519 PKCS8 private key");
+    }
+  }
+  return der.slice(X25519_PKCS8_HEADER.length);
+}
+
+function x25519SpkiDerFromRawPub(rawPub: Uint8Array): Uint8Array {
+  const der = new Uint8Array(X25519_SPKI_HEADER.length + 32);
+  der.set(X25519_SPKI_HEADER);
+  der.set(rawPub, X25519_SPKI_HEADER.length);
+  return der;
+}
+
+function x25519Pkcs8DerFromRawPriv(rawPriv: Uint8Array): Uint8Array {
+  const der = new Uint8Array(X25519_PKCS8_HEADER.length + 32);
+  der.set(X25519_PKCS8_HEADER);
+  der.set(rawPriv, X25519_PKCS8_HEADER.length);
+  return der;
+}
+
+// The HKDF info label must match the Go constant x25519HKDFInfo exactly.
+const X25519_HKDF_INFO = "mcap-encrypt x25519 v1";
+
+function deriveX25519KEK(shared: Uint8Array): Uint8Array {
+  // salt=undefined -> HKDF uses HashLen (32) zero bytes, matching Go hkdf.New(... nil ...)
+  return hkdf(sha256, shared, undefined, X25519_HKDF_INFO, 32);
+}
+
+export async function wrapSymmetricKeyX25519(symKey: Uint8Array, recipientPubPem: string): Promise<Uint8Array> {
+  const recipientPubRaw = x25519RawPubFromSpkiDer(pemToDer(recipientPubPem));
+  const ephPriv = x25519.utils.randomSecretKey();
+  const ephPub = x25519.getPublicKey(ephPriv);
+  const shared = x25519.getSharedSecret(ephPriv, recipientPubRaw);
+  const kek = deriveX25519KEK(shared);
+  const nonce = new Uint8Array(24);
+  crypto.getRandomValues(nonce);
+  const ciphertext = xchacha20poly1305(kek, nonce).encrypt(symKey);
+  // Wire format: ephem_pub(32) || nonce(24) || ciphertext(48)
+  const result = new Uint8Array(32 + 24 + ciphertext.length);
+  result.set(ephPub, 0);
+  result.set(nonce, 32);
+  result.set(ciphertext, 56);
+  return result;
+}
+
+export async function unwrapSymmetricKeyX25519(wrappedKey: Uint8Array, privateKeyPem: string): Promise<Uint8Array> {
+  // Min length: 32 (ephem_pub) + 24 (nonce) + 32 (ciphertext) + 16 (poly1305 tag) = 104
+  if (wrappedKey.length < 104) {
+    throw new Error(`x25519 wrapped key too short (${wrappedKey.length} bytes, need 104)`);
+  }
+  const privRaw = x25519RawPrivFromPkcs8Der(pemToDer(privateKeyPem));
+  const ephPub = wrappedKey.slice(0, 32);
+  const nonce = wrappedKey.slice(32, 56);
+  const ciphertext = wrappedKey.slice(56);
+  const shared = x25519.getSharedSecret(privRaw, ephPub);
+  const kek = deriveX25519KEK(shared);
+  try {
+    return xchacha20poly1305(kek, nonce).decrypt(ciphertext);
+  } catch {
+    throw new Error("x25519 key unwrap: authentication failed");
+  }
+}
+
+export interface X25519KeyPair {
+  publicKeyPem: string;
+  privateKeyPem: string;
+}
+
+export async function generateX25519KeyPair(): Promise<X25519KeyPair> {
+  const privRaw = x25519.utils.randomSecretKey();
+  const pubRaw = x25519.getPublicKey(privRaw);
+  return {
+    publicKeyPem: derToPem("PUBLIC KEY", x25519SpkiDerFromRawPub(pubRaw).buffer as ArrayBuffer),
+    privateKeyPem: derToPem("PRIVATE KEY", x25519Pkcs8DerFromRawPriv(privRaw).buffer as ArrayBuffer),
+  };
+}
+
 // spkiFingerprint returns the lowercase hex SHA-256 of the SPKI bytes of a
 // public key PEM. Used as the key_id in WrappedKeyData so decoders can
 // identify which attachment belongs to their private key without trying every one.
@@ -107,7 +236,14 @@ export async function wrapSymmetricKey(symKey: Uint8Array, publicKeyPem: string)
   return new Uint8Array(wrapped);
 }
 
-export async function unwrapSymmetricKey(wrappedKey: Uint8Array, privateKeyPem: string): Promise<Uint8Array> {
+export async function unwrapSymmetricKey(
+  wrappedKey: Uint8Array,
+  privateKeyPem: string,
+  kekAlg = "rsa-oaep-sha256",
+): Promise<Uint8Array> {
+  if (kekAlg === "x25519-hkdf-xchacha20poly1305") {
+    return unwrapSymmetricKeyX25519(wrappedKey, privateKeyPem);
+  }
   const der = pemToDer(privateKeyPem);
   const key = await crypto.subtle.importKey(
     "pkcs8",

@@ -25,6 +25,8 @@ import {
 } from "./attachment.js";
 import {
   wrapSymmetricKey,
+  wrapSymmetricKeyX25519,
+  isX25519PublicKeyPem,
   spkiFingerprint,
   encodeWrappedKeyData,
   computeManifestHMAC,
@@ -121,14 +123,18 @@ export async function encryptMcap(
   // Wrap the symmetric key for each recipient; store as separate attachments.
   const keyAttachments: Uint8Array[] = [];
   for (let i = 0; i < pubKeys.length; i++) {
-    const keyId = await spkiFingerprint(pubKeys[i]!);
-    const wrappedKey = await wrapSymmetricKey(symKey, pubKeys[i]!);
+    const pubPem = pubKeys[i]!;
+    const keyId = await spkiFingerprint(pubPem);
+    const isX25519 = isX25519PublicKeyPem(pubPem);
+    const wrappedKey = isX25519
+      ? await wrapSymmetricKeyX25519(symKey, pubPem)
+      : await wrapSymmetricKey(symKey, pubPem);
     const wkdBytes = encodeWrappedKeyData({
       version: 3, // v3: manifest required on decrypt
       fileId,
       keyId,
       algorithm: "xchacha20poly1305",
-      kekAlg: "rsa-oaep-sha256",
+      kekAlg: isX25519 ? "x25519-hkdf-xchacha20poly1305" : "rsa-oaep-sha256",
       wrappedKey,
     });
     keyAttachments.push(encodeAttachment(now, 0n, ATTACHMENT_NAME, ATTACHMENT_MEDIA_TYPE, wkdBytes));

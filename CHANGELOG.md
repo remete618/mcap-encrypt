@@ -16,7 +16,9 @@ All notable changes to this project are documented here.
 
 ### Added
 - **Encrypted attachments (format v5)**: User attachments are now encrypted with XChaCha20-Poly1305 and stored as `EncryptedAttachment` records (opcode `0x82`). Attachment data is fully opaque to readers without the private key. Attachment name, media type, and timestamps remain plaintext for enumeration without a key. AAD binds `file_id`, `name`, `media_type`, `log_time`, and `create_time`, preventing cross-file transplant and rename attacks.
-- **X25519-HKDF-XChaCha20Poly1305 key wrapping**: `GenerateX25519KeyPair`, `WrapSymmetricKeyX25519`, `UnwrapSymmetricKeyX25519`. Any file can have a mix of RSA and X25519 recipients.
+- **Seekable summary section (format v4)**: Encrypted output now includes a full MCAP summary section after `DataEnd`: `Schema`, `Channel`, `Statistics`, `ChunkIndex`, and `SummaryOffset` records. `ChunkIndex` entries point at `EncryptedChunk` file offsets, enabling O(log n) time-range seeking and timeline display in any MCAP reader (including Foxglove Studio) without decrypting.
+- **X25519-HKDF-XChaCha20Poly1305 key wrapping (Go and TypeScript)**: `GenerateX25519KeyPair`, `WrapSymmetricKeyX25519`, `UnwrapSymmetricKeyX25519` in Go; `generateX25519KeyPair`, `wrapSymmetricKeyX25519`, `unwrapSymmetricKeyX25519` in TypeScript. Any file can have a mix of RSA and X25519 recipients in both implementations. TypeScript auto-detects key type from the SPKI OID at encrypt time. `encryptMcap` and `decryptMcap` accept X25519 keys without API changes. Verified by 13 unit tests and 2 new interop tests (Go encrypts X25519 → TS decrypts; TS encrypts X25519 → Go decrypts).
+- **Re-encrypt guard (Go and TypeScript)**: `Encrypt`/`EncryptMulti` (Go) and `encryptMcap` (TypeScript) now return an explicit error when the input file is already encrypted (contains opcode `0x81` or `0x82`) instead of silently producing an output with no user attachments.
 - **Format v3**: manifest attachment required on decrypt; decrypting a v3 file without the manifest returns an error. Prevents strip attacks. All files written by this library use v3.
 - **Manifest HMAC**: HMAC-SHA-256 over `chunkCount || fileID` detects tail truncation and chunk removal.
 - **HKDF test vector** (`TestX25519KDFTestVector`): anchors info string, hash, and salt so a wire-incompatible KDF change causes a test failure.
@@ -37,7 +39,7 @@ All notable changes to this project are documented here.
 - LZ4-compressed chunks transparently re-compressed as zstd on encrypt (JS-compatible). TypeScript rejects LZ4 source files.
 - Encrypted output no longer carries the source MCAP index; decrypted output is fully re-indexed.
 
-### Tests (Go: 65 unit tests, 4 fuzz targets; TypeScript: 46; interop: 4)
+### Tests (Go: 65 unit tests, 4 fuzz targets; TypeScript: 59; interop: 6)
 - Nonce uniqueness across all chunks in a file.
 - All AAD fields independently tampered (message_start_time, message_end_time, uncompressed_size, uncompressed_crc, slot_id, compression).
 - FileID tampered in the wrapped-key attachment (caught by chunk AAD mismatch).
@@ -54,6 +56,8 @@ All notable changes to this project are documented here.
 - Interop: Go encrypts with attachment, TypeScript decrypts (and vice versa).
 - Re-encrypting an already-encrypted MCAP returns a clear error (Go and TypeScript); no partial output left on disk.
 - TypeScript AAD parity: 8 `chunkAAD()` unit tests prove each field (fileId, chunkIdx, slotId, compression, uncompressedSize, uncompressedCrc, startTime, endTime) produces distinct AAD bytes. 6 end-to-end tamper tests prove each mutable field causes AEAD rejection. fileId tamper and chunk reordering tests complete parity with the Go adversarial suite.
+- TypeScript X25519: 13 unit tests (KDF vector, wrap/unwrap round-trip, wrong key rejection, RSA key type mismatch, key generation, full encrypt/decrypt round-trip, multi-recipient RSA+X25519). HKDF test vector matches the Go reference vector exactly.
+- Interop X25519: 2 new tests (Go encrypts X25519 → TS decrypts; TS encrypts X25519 → Go decrypts). Go CLI reads TS-generated PKCS8/SPKI PEM files directly.
 
 ---
 
@@ -75,6 +79,8 @@ All notable changes to this project are documented here.
 
 | Version | Change |
 |---------|--------|
-| 1 | Initial format. AAD bound only `message_start_time` and `message_end_time`. |
-| 2 | AAD expanded; `file_id` added to `WrappedKeyData`; multi-recipient support. |
-| 3 | Manifest attachment required on decrypt; strip-attack prevention via HMAC. |
+| 1 | Initial format. AAD bound only `message_start_time` and `message_end_time`. No `file_id`. |
+| 2 | AAD expanded to include `file_id`, `chunk_index`, `slot_id`, `compression`, `uncompressed_size`, `uncompressed_crc`. `file_id` added to `WrappedKeyData`. Multi-recipient support. |
+| 3 | Manifest attachment required on decrypt; strip-attack prevention via HMAC-SHA-256. X25519 key-wrapping algorithm added. |
+| 4 | Summary section added after `DataEnd`: `Schema`, `Channel`, `Statistics`, `ChunkIndex`, `SummaryOffset`. Enables O(log n) time-range seeking without decryption. |
+| 5 | `EncryptedAttachment` record (opcode `0x82`) added. Attachment data encrypted; name and media type remain plaintext. |

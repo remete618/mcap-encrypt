@@ -159,16 +159,18 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 - `FuzzDecodeWrappedKeyData`
 - `FuzzStreamDecrypt` (found INT-2025-001, INT-2025-002, INT-2025-003)
 
-### TypeScript: 46 unit tests
+### TypeScript: 59 unit tests
 
-Covers RSA-4096 and X25519 key wrapping, full AAD field tamper parity with Go (chunkAAD unit tests + end-to-end splice tests for all mutable fields + fileId tamper + chunk reordering), encrypted attachment round-trip and tamper rejection, and format compatibility with the Go implementation.
+Covers RSA-4096 and X25519 key wrapping, KDF test vector (HKDF-SHA-256 output anchored against the Go reference), full AAD field tamper parity with Go (chunkAAD unit tests + end-to-end splice tests for all mutable fields + fileId tamper + chunk reordering), encrypted attachment round-trip and tamper rejection, and format compatibility with the Go implementation.
 
-### Cross-language interop: 4 tests
+### Cross-language interop: 6 tests
 
-- Go encrypts, TypeScript decrypts (messages).
-- TypeScript encrypts, Go decrypts (messages).
-- Go encrypts with attachment, TypeScript decrypts (attachment data verified).
-- TypeScript encrypts with attachment, Go decrypts (attachment data verified).
+- Go encrypts (RSA), TypeScript decrypts (messages).
+- TypeScript encrypts (RSA), Go decrypts (messages).
+- Go encrypts with attachment (RSA), TypeScript decrypts (attachment data verified).
+- TypeScript encrypts with attachment (RSA), Go decrypts (attachment data verified).
+- Go encrypts (X25519), TypeScript decrypts (messages).
+- TypeScript encrypts (X25519), Go decrypts (messages).
 
 Run as a dedicated CI job on every push.
 
