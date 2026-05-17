@@ -37,7 +37,7 @@ All notable changes to this project are documented here.
 - LZ4-compressed chunks transparently re-compressed as zstd on encrypt (JS-compatible). TypeScript rejects LZ4 source files.
 - Encrypted output no longer carries the source MCAP index; decrypted output is fully re-indexed.
 
-### Tests (Go: 63 unit tests, 4 fuzz targets; TypeScript: 27; interop: 4)
+### Tests (Go: 65 unit tests, 4 fuzz targets; TypeScript: 30; interop: 4)
 - Nonce uniqueness across all chunks in a file.
 - All AAD fields independently tampered (message_start_time, message_end_time, uncompressed_size, uncompressed_crc, slot_id, compression).
 - FileID tampered in the wrapped-key attachment (caught by chunk AAD mismatch).
@@ -52,6 +52,7 @@ All notable changes to this project are documented here.
 - Encrypted attachment ciphertext tamper rejected; plaintext name tamper detected via AAD.
 - Attachment data not visible in plaintext inside the encrypted file.
 - Interop: Go encrypts with attachment, TypeScript decrypts (and vice versa).
+- Re-encrypting an already-encrypted MCAP returns a clear error (Go and TypeScript); no partial output left on disk.
 
 ---
 

@@ -101,6 +101,16 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string, progress .
 		}
 	}
 
+	// Guard: reject input that is already encrypted. The MCAP Lexer silently
+	// skips unknown opcodes, so feeding an encrypted file would produce an
+	// output with no chunks and no user attachments rather than an error.
+	if enc, checkErr := containsEncryptedRecords(inputPath); checkErr != nil {
+		return fmt.Errorf("check input: %w", checkErr)
+	} else if enc {
+		return fmt.Errorf("input is already encrypted (contains EncryptedChunk/EncryptedAttachment records); " +
+			"decrypt first with 'mcap-encrypt decrypt'")
+	}
+
 	// --- Pass 1: collect schemas and channels from inside chunk records. ---
 	// mcap.Lexer with EmitChunks=true only yields Schema/Channel from the
 	// summary section (after DataEnd). A default-mode scan reads them from
@@ -611,6 +621,41 @@ func encryptChunk(chunk *mcap.Chunk, symKey []byte, slotID string, fileID []byte
 		Nonce:            nonce,
 		EncryptedData:    ciphertext,
 	}, nil
+}
+
+// containsEncryptedRecords does a fast opcode-only scan of an MCAP file.
+// It reads only the 9-byte record headers (opcode + length), discarding each
+// payload via io.Discard, and returns true if it finds opcode 0x81 or 0x82.
+// This is used to prevent silently re-encrypting an already-encrypted file.
+func containsEncryptedRecords(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	if err := ReadMagic(f); err != nil {
+		return false, nil // not a valid MCAP; let the main lexer produce the error
+	}
+
+	var hdr [9]byte
+	for {
+		if _, err := io.ReadFull(f, hdr[:]); err != nil {
+			break
+		}
+		opcode := hdr[0]
+		length := binary.LittleEndian.Uint64(hdr[1:])
+		if opcode == OpcodeEncryptedChunk || opcode == OpcodeEncryptedAttachment {
+			return true, nil
+		}
+		if length > maxRecordDataSize {
+			break
+		}
+		if _, err := io.CopyN(io.Discard, f, int64(length)); err != nil {
+			break
+		}
+	}
+	return false, nil
 }
 
 // buildAttachmentBytes serializes an MCAP Attachment record payload.

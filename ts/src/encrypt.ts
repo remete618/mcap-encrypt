@@ -245,6 +245,13 @@ export async function encryptMcap(
         writeRecord(writer, OP_FOOTER, new Uint8Array(20));
         break outer;
 
+      case OP_ENCRYPTED_CHUNK:
+      case OP_ENCRYPTED_ATTACHMENT:
+        throw new Error(
+          `input is already encrypted (found opcode 0x${opcode.toString(16).padStart(2, "0")}); ` +
+          "decrypt first before re-encrypting",
+        );
+
       case OP_MESSAGE:
         throw new Error(
           "input MCAP contains raw Message records outside of chunks; only chunked MCAPs are supported",

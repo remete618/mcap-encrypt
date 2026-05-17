@@ -632,6 +632,28 @@ func TestAttachmentDataNotPlaintextInEncryptedFile(t *testing.T) {
 }
 
 // TestEncryptedAttachmentOpcodePresent verifies 0x82 records appear in the output
+// TestEncryptAlreadyEncryptedReturnsError verifies that attempting to encrypt
+// an already-encrypted MCAP returns a clear error instead of silently producing
+// an output with no user attachments or chunks.
+func TestEncryptAlreadyEncryptedReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	reencPath := filepath.Join(dir, "reenc.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAPWithAttachment(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	err := mcapencrypt.Encrypt(encPath, reencPath, keyBase+".pub.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already encrypted")
+	// The partial output must not be left on disk.
+	_, statErr := os.Stat(reencPath)
+	require.True(t, os.IsNotExist(statErr), "re-encrypt should not leave output file on disk")
+}
+
 // and that no user attachment (0x09 with a non-framework name) is present in plaintext.
 func TestEncryptedAttachmentOpcodePresent(t *testing.T) {
 	dir := t.TempDir()

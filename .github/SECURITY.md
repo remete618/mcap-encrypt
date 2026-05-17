@@ -107,7 +107,7 @@ This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256
 
 All tests run on every CI push (`go test -race -count=1 ./...`).
 
-### Go: 63 unit tests, 4 fuzz targets
+### Go: 65 unit tests, 4 fuzz targets
 
 **Round-trip:**
 - RSA-4096-OAEP-SHA-256 key wrapping and unwrapping
@@ -159,7 +159,7 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 - `FuzzDecodeWrappedKeyData`
 - `FuzzStreamDecrypt` (found INT-2025-001, INT-2025-002, INT-2025-003)
 
-### TypeScript: 27 unit tests
+### TypeScript: 30 unit tests
 
 Covers RSA-4096 and X25519 key wrapping, tamper detection, encrypted attachment round-trip and tamper rejection, and format compatibility with the Go implementation.
 
@@ -171,3 +171,7 @@ Covers RSA-4096 and X25519 key wrapping, tamper detection, encrypted attachment 
 - TypeScript encrypts with attachment, Go decrypts (attachment data verified).
 
 Run as a dedicated CI job on every push.
+
+### Re-encrypt guard
+
+Both Go and TypeScript return an explicit error when the input file is already encrypted (contains opcode `0x81` or `0x82`). Go verifies no partial output file is left on disk. This prevents the prior silent behavior where re-encrypting an encrypted MCAP would produce an output with no chunks and no user attachments.

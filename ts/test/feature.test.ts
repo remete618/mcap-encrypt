@@ -190,6 +190,16 @@ describe("encrypted attachment round-trip", () => {
   });
 });
 
+describe("re-encrypt guard", () => {
+  it("throws a clear error when encrypting an already-encrypted MCAP", async () => {
+    const plain = buildTestMcapWithAttachment();
+    const enc = await encryptMcap(plain, keys.publicKeyPem);
+    await expect(encryptMcap(enc, keys.publicKeyPem)).rejects.toThrow(
+      /already encrypted/,
+    );
+  });
+});
+
 describe("encrypted attachment tamper rejection", () => {
   it("rejects decryption when ciphertext is flipped", async () => {
     const plain = buildTestMcapWithAttachment();
