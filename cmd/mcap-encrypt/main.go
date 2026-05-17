@@ -296,10 +296,10 @@ func runEncrypt(args []string) {
 	if err := checkMCAPMagic(input); err != nil {
 		fatal(fmt.Errorf("input is not a valid MCAP file: %w", err))
 	}
-	if !*force {
-		if _, statErr := os.Stat(output); statErr == nil {
-			fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
-		}
+	if *force {
+		os.Remove(output) // ignore error; library will catch any real FS issue
+	} else if _, statErr := os.Stat(output); statErr == nil {
+		fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
 	}
 
 	recipientNote := ""
@@ -339,10 +339,10 @@ func runDecrypt(args []string) {
 	}
 	input, output := fs.Arg(0), fs.Arg(1)
 
-	if !*force {
-		if _, statErr := os.Stat(output); statErr == nil {
-			fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
-		}
+	if *force {
+		os.Remove(output) // ignore error; library will catch any real FS issue
+	} else if _, statErr := os.Stat(output); statErr == nil {
+		fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
 	}
 	fmt.Printf("decrypting: %s\n", input)
 

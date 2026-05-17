@@ -323,6 +323,51 @@ func buildTestMCAPWithMetadata(t *testing.T, path string) {
 	require.NoError(t, w.Close())
 }
 
+// TestOverwriteRejectedByLibrary verifies the library itself refuses to overwrite an
+// existing output file. This is the guard the CLI --force fix works around.
+func TestOverwriteRejectedByLibrary(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	// Second encrypt call with same output must fail.
+	err := mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already exists")
+
+	// After removing the file the call must succeed — this is what --force does.
+	require.NoError(t, os.Remove(encPath))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+}
+
+// TestOverwriteDecryptRejectedByLibrary is the decrypt counterpart.
+func TestOverwriteDecryptRejectedByLibrary(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
+
+	// Second decrypt call with same output must fail.
+	err := mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already exists")
+
+	// After removing the file the call must succeed.
+	require.NoError(t, os.Remove(decPath))
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
+}
+
 // TestEncryptedChunkOpcodePresent verifies 0x81 records appear in the output.
 func TestEncryptedChunkOpcodePresent(t *testing.T) {
 	dir := t.TempDir()
