@@ -13,15 +13,17 @@ jobs:
   fossa:
     name: License compliance
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version-file: go.mod
           cache: true
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "20"
           cache: "npm"
@@ -30,6 +32,6 @@ jobs:
       - name: Install npm deps
         run: cd ts && npm ci
 
-      - uses: fossas/fossa-action@main
+      - uses: fossas/fossa-action@29693cc50323968e039056be419b32989fc5880c # main
         with:
           api-key: ${{ secrets.FOSSA_API_KEY }}
