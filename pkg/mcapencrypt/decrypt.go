@@ -22,7 +22,26 @@ import (
 // Decryption is single-pass: the wrapped key attachment appears before the first
 // encrypted chunk so each chunk is decrypted immediately as it is read.
 // inputPath and outputPath must differ.
-func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
+// progressReader wraps an io.Reader and calls a progress callback with the
+// cumulative byte count after each Read.
+type progressReader struct {
+	r        io.Reader
+	progress func(int64)
+	count    int64
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.count += int64(n)
+		p.progress(p.count)
+	}
+	return n, err
+}
+
+// Decrypt reads an encrypted MCAP file and writes a standard, indexed MCAP file.
+// The optional progress callback receives cumulative bytes read from the input.
+func Decrypt(inputPath, outputPath, privKeyPath string, progress ...func(int64)) (retErr error) {
 	absIn, err := filepath.Abs(inputPath)
 	if err != nil {
 		return fmt.Errorf("resolve input path: %w", err)
@@ -87,7 +106,11 @@ func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
 		}
 	}()
 
-	if err := streamDecrypt(inFile, tmpFile, unwrap); err != nil {
+	var src io.Reader = inFile
+	if len(progress) > 0 && progress[0] != nil {
+		src = &progressReader{r: inFile, progress: progress[0]}
+	}
+	if err := streamDecrypt(src, tmpFile, unwrap); err != nil {
 		return err
 	}
 	if err := tmpFile.Close(); err != nil {

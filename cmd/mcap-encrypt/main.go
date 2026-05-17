@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -32,10 +33,12 @@ Commands:
   encrypt  Encrypt an MCAP file. Each chunk is encrypted with XChaCha20-Poly1305.
            Repeat --key to encrypt for multiple recipients; any private key decrypts.
            Supports RSA-4096 and X25519 public keys (single-pass, streaming).
+           Press Ctrl-Z to pause, fg to resume.
 
   decrypt  Decrypt an encrypted MCAP file using the private key.
            Supports RSA and X25519 private keys.
            Outputs a standard, fully-indexed MCAP file.
+           Press Ctrl-Z to pause, fg to resume.
 
   bridge   Start a Foxglove WebSocket bridge for an encrypted MCAP file.
            Decrypts in memory and serves over the Foxglove ws-protocol.
@@ -88,12 +91,93 @@ func checkMCAPMagic(path string) error {
 	return nil
 }
 
-// startSpinner prints an animated progress line to stderr. Close the returned
-// channel to stop the spinner and clear the line.
-func startSpinner(label string) chan struct{} {
-	done := make(chan struct{})
+// formatSize formats bytes as a human-readable string (B / KB / MB / GB).
+func formatSize(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.2f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// formatETA formats a duration as a compact ETA string.
+// Returns "" when the duration is zero, negative, or implausibly large.
+func formatETA(d time.Duration) string {
+	if d <= 0 || d > 24*time.Hour {
+		return ""
+	}
+	if d < time.Second {
+		return "ETA <1s"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("ETA %ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("ETA %dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("ETA %dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+const barWidth = 22
+
+// renderBar returns the progress line string. total <= 0 means no progress info.
+func renderBar(label string, frame byte, elapsed time.Duration, done, total int64, rateMBps float64) string {
+	if total <= 0 {
+		return fmt.Sprintf("\r\033[K  %c  %s  %.1fs", frame, label, elapsed.Seconds())
+	}
+
+	pct := float64(done) / float64(total) * 100
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+
+	filled := int(pct / 100 * barWidth)
+	if filled > barWidth {
+		filled = barWidth
+	}
+	bar := strings.Repeat("=", filled)
+	if filled < barWidth {
+		bar += ">"
+		bar += strings.Repeat(" ", barWidth-filled-1)
+	}
+
+	rateStr := "-- MB/s"
+	if rateMBps >= 0.01 {
+		rateStr = fmt.Sprintf("%.1f MB/s", rateMBps)
+	}
+
+	etaStr := ""
+	if rateMBps >= 0.01 && pct < 99.5 {
+		remMB := float64(total-done) / (1 << 20)
+		eta := time.Duration(remMB / rateMBps * float64(time.Second))
+		if s := formatETA(eta); s != "" {
+			etaStr = "  " + s
+		}
+	}
+
+	return fmt.Sprintf("\r\033[K  %c  %s  [%s]  %3.0f%%  %s / %s  %s%s",
+		frame, label, bar, pct,
+		formatSize(done), formatSize(total),
+		rateStr, etaStr)
+}
+
+// startProgress prints an animated progress bar to stderr.
+// bytesTotal <= 0 shows a simple spinner with elapsed time.
+// bytesWritten is read atomically each tick.
+// Close the returned channel to stop and clear the line.
+func startProgress(label string, bytesTotal int64, bytesWritten *atomic.Int64) chan struct{} {
+	quit := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
+
 	go func() {
 		defer wg.Done()
 		frames := []byte{'-', '\\', '|', '/'}
@@ -101,23 +185,74 @@ func startSpinner(label string) chan struct{} {
 		defer ticker.Stop()
 		start := time.Now()
 		i := 0
+
+		var lastSampleBytes int64
+		lastSampleTime := start
+		var rateMBps float64
+
+		// SIGTSTP (Ctrl-Z): pause the spinner cleanly, suspend the process,
+		// then resume the spinner when the shell runs fg.
+		sigPause := make(chan os.Signal, 1)
+		notifyPause(sigPause)
+		defer resetPause(sigPause)
+
 		for {
 			select {
 			case <-ticker.C:
-				fmt.Fprintf(os.Stderr, "\r  %c  %s  %.1fs",
-					frames[i%len(frames)], label, time.Since(start).Seconds())
+				elapsed := time.Since(start)
+				frame := frames[i%len(frames)]
 				i++
-			case <-done:
-				fmt.Fprint(os.Stderr, "\r\033[K") // clear the progress line
+
+				n := int64(0)
+				if bytesWritten != nil {
+					n = bytesWritten.Load()
+				}
+
+				// Update EMA throughput every 500 ms.
+				if dt := time.Since(lastSampleTime); dt >= 500*time.Millisecond && dt > 0 {
+					inst := float64(n-lastSampleBytes) / dt.Seconds() / (1 << 20)
+					if inst >= 0 {
+						if rateMBps == 0 {
+							rateMBps = inst
+						} else {
+							// Exponential moving average, alpha = 0.35.
+							rateMBps = 0.35*inst + 0.65*rateMBps
+						}
+					}
+					lastSampleBytes = n
+					lastSampleTime = time.Now()
+				}
+
+				fmt.Fprint(os.Stderr, renderBar(label, frame, elapsed, n, bytesTotal, rateMBps))
+
+			case <-sigPause:
+				// Clear the progress line and print a pause notice.
+				fmt.Fprint(os.Stderr, "\r\033[K  paused  (run 'fg' to resume)\n")
+				// Stop catching SIGTSTP, then send SIGSTOP so the OS suspends us.
+				// The process blocks here until the shell sends SIGCONT (fg).
+				resetPause(sigPause)
+				suspendSelf()
+				// Resumed: re-register and redraw immediately.
+				notifyPause(sigPause)
+				lastSampleTime = time.Now() // reset rate window to avoid spike
+				lastSampleBytes = func() int64 {
+					if bytesWritten != nil {
+						return bytesWritten.Load()
+					}
+					return 0
+				}()
+
+			case <-quit:
+				fmt.Fprint(os.Stderr, "\r\033[K")
 				return
 			}
 		}
 	}()
-	// Return a channel that, when closed, stops the spinner and waits for cleanup.
+
 	stop := make(chan struct{})
 	go func() {
 		<-stop
-		close(done)
+		close(quit)
 		wg.Wait()
 	}()
 	return stop
@@ -173,9 +308,13 @@ func runEncrypt(args []string) {
 	}
 	fmt.Printf("encrypting%s: %s\n", recipientNote, input)
 
-	stop := startSpinner("encrypting")
+	inputSize := fileSize(input)
+	var progressBytes atomic.Int64
+	stop := startProgress("encrypting", inputSize, &progressBytes)
 	start := time.Now()
-	err := mcapencrypt.EncryptMulti(input, output, []string(keys))
+	err := mcapencrypt.EncryptMulti(input, output, []string(keys), func(n int64) {
+		progressBytes.Store(n)
+	})
 	close(stop)
 	elapsed := time.Since(start)
 
@@ -207,9 +346,13 @@ func runDecrypt(args []string) {
 	}
 	fmt.Printf("decrypting: %s\n", input)
 
-	stop := startSpinner("decrypting")
+	inputSize := fileSize(input)
+	var progressBytes atomic.Int64
+	stop := startProgress("decrypting", inputSize, &progressBytes)
 	start := time.Now()
-	err := mcapencrypt.Decrypt(input, output, *key)
+	err := mcapencrypt.Decrypt(input, output, *key, func(n int64) {
+		progressBytes.Store(n)
+	})
 	close(stop)
 	elapsed := time.Since(start)
 
@@ -235,7 +378,7 @@ func runBridge(args []string) {
 	mcapPath := fs.Arg(0)
 
 	fmt.Printf("loading: %s\n", mcapPath)
-	stop := startSpinner("decrypting")
+	stop := startProgress("decrypting", 0, nil)
 	start := time.Now()
 
 	state, err := mcapencrypt.LoadBridgeState(mcapPath, *key)
@@ -265,6 +408,15 @@ func runBridge(args []string) {
 			fatal(err)
 		}
 	}
+}
+
+// fileSize returns the size in bytes of the file at path, or 0 on error.
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return 0
+	}
+	return info.Size()
 }
 
 func fatal(err error) {

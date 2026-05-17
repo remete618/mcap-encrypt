@@ -33,7 +33,9 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 //
 // Public keys may be RSA (any size) or X25519. Mixed-algorithm recipient lists
 // are supported.
-func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr error) {
+// EncryptMulti encrypts a standard MCAP file for one or more recipients.
+// The optional progress callback receives cumulative bytes written to the output.
+func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string, progress ...func(int64)) (retErr error) {
 	if len(pubKeyPaths) == 0 {
 		return fmt.Errorf("at least one public key is required")
 	}
@@ -318,6 +320,9 @@ outer:
 			endOff, seekErr := tmpFile.Seek(0, io.SeekCurrent)
 			if seekErr != nil {
 				return fmt.Errorf("seek after chunk %d: %w", chunkIdx-1, seekErr)
+			}
+			if len(progress) > 0 && progress[0] != nil {
+				progress[0](endOff)
 			}
 			encChunkMetas = append(encChunkMetas, encChunkMeta{
 				fileOffset:     startOff,
