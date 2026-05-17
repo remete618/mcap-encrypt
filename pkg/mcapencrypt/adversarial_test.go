@@ -132,6 +132,62 @@ func TestWrongKeyError(t *testing.T) {
 	require.Contains(t, err.Error(), "private key does not match")
 }
 
+// stripManifestAttachment returns a copy of data with the manifest attachment
+// record removed, simulating a strip attack on a v3 file.
+func stripManifestAttachment(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var out []byte
+	out = append(out, data[:8]...) // magic
+	pos := 8
+	for pos+9 <= len(data) {
+		opcode := data[pos]
+		n := int(binary.LittleEndian.Uint64(data[pos+1:]))
+		rec := data[pos : pos+9+n]
+		if opcode == 0x09 { // opcodeAttach = 0x09
+			// Parse name from attachment: logTime(8)+createTime(8)+nameLen(4)+name
+			payload := data[pos+9 : pos+9+n]
+			if len(payload) >= 28 {
+				nameLen := int(binary.LittleEndian.Uint32(payload[16:20]))
+				if 20+nameLen <= len(payload) {
+					name := string(payload[20 : 20+nameLen])
+					if name == mcapencrypt.ManifestAttachmentName {
+						pos += 9 + n
+						continue // drop this record
+					}
+				}
+			}
+		}
+		out = append(out, rec...)
+		pos += 9 + n
+	}
+	return out
+}
+
+// TestManifestStrippedV3Rejected verifies that stripping the manifest from a
+// v3 file (the current format version) causes decryption to fail.
+func TestManifestStrippedV3Rejected(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	strippedPath := filepath.Join(dir, "stripped.mcap")
+	decPath := filepath.Join(dir, "dec.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(keyBase))
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	data, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+	stripped := stripManifestAttachment(t, data)
+	require.Less(t, len(stripped), len(data), "stripped file should be smaller")
+	require.NoError(t, os.WriteFile(strippedPath, stripped, 0o644))
+
+	err = mcapencrypt.Decrypt(strippedPath, decPath, keyBase+".priv.pem")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "manifest attachment missing")
+}
+
 func TestNonChunkedInputRejected(t *testing.T) {
 	dir := t.TempDir()
 	flatPath := filepath.Join(dir, "flat.mcap")

@@ -9,9 +9,14 @@ export const MANIFEST_ATTACHMENT_MEDIA_TYPE = "application/x-mcap-manifest";
 export const MANIFEST_PAYLOAD_SIZE = 8 + 32;
 
 const FILE_ID_SIZE = 16;
-const WRAPPED_KEY_VERSION = 2;
+// WRAPPED_KEY_VERSION is the version written by this library.
+// Version 2 is legacy (manifest optional on decrypt).
+// Version 3 requires a manifest during decryption.
+const WRAPPED_KEY_VERSION = 3;
+const WRAPPED_KEY_VERSION_LEGACY = 2;
 
 export interface WrappedKeyData {
+  version: number; // 2 = legacy; 3 = manifest required
   fileId: Uint8Array; // 16 random bytes, same for every recipient of a given file
   keyId: string;
   algorithm: string;
@@ -21,13 +26,17 @@ export interface WrappedKeyData {
 
 export function decodeWrappedKeyData(data: Uint8Array): WrappedKeyData {
   if (data.length < 1) throw new Error("wrapped key data too short");
-  if (data[0] !== WRAPPED_KEY_VERSION) {
-    throw new Error(`unsupported wrapped key version ${data[0]} (want ${WRAPPED_KEY_VERSION})`);
+  const ver = data[0];
+  if (ver !== WRAPPED_KEY_VERSION && ver !== WRAPPED_KEY_VERSION_LEGACY) {
+    throw new Error(
+      `unsupported wrapped key version ${ver} (want ${WRAPPED_KEY_VERSION_LEGACY} or ${WRAPPED_KEY_VERSION})`,
+    );
   }
   if (data.length < 1 + FILE_ID_SIZE) throw new Error("wrapped key data too short for file_id");
   const fileId = new Uint8Array(data.subarray(1, 1 + FILE_ID_SIZE));
   const r = new BinaryReader(data.subarray(1 + FILE_ID_SIZE));
   const wkd: WrappedKeyData = {
+    version: ver,
     fileId,
     keyId: r.readString(),
     algorithm: r.readString(),
@@ -45,7 +54,7 @@ export function decodeWrappedKeyData(data: Uint8Array): WrappedKeyData {
 
 export function encodeWrappedKeyData(wkd: WrappedKeyData): Uint8Array {
   const w = new BinaryWriter();
-  w.writeUint8(WRAPPED_KEY_VERSION);
+  w.writeUint8(wkd.version ?? WRAPPED_KEY_VERSION);
   w.writeBytes(wkd.fileId);
   w.writeString(wkd.keyId);
   w.writeString(wkd.algorithm);

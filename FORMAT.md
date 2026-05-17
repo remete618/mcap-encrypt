@@ -88,7 +88,7 @@ The `data` field contains a `WrappedKeyData` binary payload:
 
 | Field | Type | Description |
 |---|---|---|
-| `version` | `uint8` | Format version; must be `2` |
+| `version` | `uint8` | Payload version. `3` (current) = manifest required on decrypt. `2` (legacy) = manifest optional. |
 | `file_id` | `bytes[16]` | Random 16-byte file identity, same across all recipients of the same file |
 | `key_id` | `string` | Hex-encoded SHA-256 of the recipient's SPKI public key DER encoding |
 | `algorithm` | `string` | Symmetric cipher; must be `"xchacha20poly1305"` |
@@ -100,7 +100,7 @@ The `data` field contains a `WrappedKeyData` binary payload:
 ### kek_algorithm: `rsa-oaep-sha256`
 
 The 32-byte symmetric key is encrypted with RSA-OAEP-SHA-256.
-`wrapped_key` length: 512 bytes (RSA-4096) or 256 bytes (RSA-2048, legacy).
+`wrapped_key` length: 512 bytes (RSA-4096).
 
 ### kek_algorithm: `x25519-hkdf-xchacha20poly1305`
 
@@ -133,7 +133,7 @@ During decryption:
 2. Verify `expected_hmac == stored_hmac` in constant time. Failure means the manifest was tampered.
 3. Verify `stored_chunk_count == actual_chunks_decrypted`. Mismatch means the file was truncated or padded.
 
-Files written before manifest support was added (format version 2) will not have this attachment; decoders skip verification for backwards compatibility.
+Files with `WrappedKeyData.version == 2` (legacy) may not have this attachment; decoders skip manifest verification for those files only. Files with `version == 3` must have this attachment; decryption fails without it to prevent manifest strip attacks.
 
 ---
 

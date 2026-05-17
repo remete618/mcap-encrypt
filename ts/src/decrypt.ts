@@ -498,6 +498,7 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
   let unwrapped: { symKey: Uint8Array; fileId: Uint8Array } | undefined;
   let chunkIdx = 0n;
   let wkaCount = 0;
+  let manifestRequired = false; // true when any v3+ key attachment is seen
   let inputProfile = "";
   let inputLibrary = "mcap-encrypt";
   const schemas: Schema[] = [];
@@ -534,6 +535,10 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
         const att = parseAttachment(new Uint8Array(data));
         if (att.name === ATTACHMENT_NAME && att.mediaType === ATTACHMENT_MEDIA_TYPE) {
           wkaCount++;
+          try {
+            const wkd = decodeWrappedKeyData(att.data);
+            if (wkd.version >= 3) manifestRequired = true;
+          } catch { /* malformed; ignore */ }
           if (!unwrapped) {
             unwrapped = await tryUnwrapKey(att.data, privateKeyPem);
           }
@@ -564,8 +569,14 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
     throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
   }
 
-  // Verify manifest if present. Files written before manifest support was added
-  // will not have one; skip verification for backwards compatibility.
+  // v3+ files always write a manifest; reject if it was stripped.
+  if (manifestRequired && manifestPayload == null) {
+    throw new Error(
+      "manifest attachment missing: file may have been tampered with (strip attack)",
+    );
+  }
+
+  // Verify manifest if present. v2 legacy files may lack one.
   if (manifestPayload != null) {
     if (manifestPayload.length < MANIFEST_PAYLOAD_SIZE) {
       throw new Error(`manifest payload too short (${manifestPayload.length} bytes, need ${MANIFEST_PAYLOAD_SIZE})`);

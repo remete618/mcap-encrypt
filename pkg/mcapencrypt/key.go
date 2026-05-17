@@ -21,7 +21,11 @@ import (
 const (
 	AttachmentName      = "mcap_encryption_key"
 	AttachmentMediaType = "application/x-mcap-wrapped-key"
-	wrappedKeyVersion   = byte(2)
+	// wrappedKeyVersion is the current version written by this library.
+	// Version 2 is legacy (no manifest requirement on decrypt).
+	// Version 3 requires a manifest during decryption; without it, decryption fails.
+	wrappedKeyVersion   = byte(3)
+	wrappedKeyVersionV2 = byte(2) // legacy: manifest optional
 	fileIDSize          = 16
 
 	ManifestAttachmentName      = "mcap_encryption_manifest"
@@ -38,6 +42,7 @@ const (
 
 // WrappedKeyData is the binary payload stored inside the WrappedKey Attachment.
 type WrappedKeyData struct {
+	Version    byte   // 2 = legacy (manifest optional); 3 = manifest required
 	FileID     []byte // 16 random bytes, same for every recipient of a given file
 	KeyID      string
 	Algorithm  string // "xchacha20poly1305"
@@ -81,13 +86,14 @@ func DecodeWrappedKeyData(data []byte) (*WrappedKeyData, error) {
 	if len(data) < 1 {
 		return nil, fmt.Errorf("empty wrapped key data")
 	}
-	if data[0] != wrappedKeyVersion {
-		return nil, fmt.Errorf("unsupported wrapped key version %d (want %d)", data[0], wrappedKeyVersion)
+	ver := data[0]
+	if ver != wrappedKeyVersion && ver != wrappedKeyVersionV2 {
+		return nil, fmt.Errorf("unsupported wrapped key version %d (want %d or %d)", ver, wrappedKeyVersionV2, wrappedKeyVersion)
 	}
 	if len(data) < 1+fileIDSize {
 		return nil, fmt.Errorf("truncated: too short for file_id")
 	}
-	k := &WrappedKeyData{}
+	k := &WrappedKeyData{Version: ver}
 	k.FileID = make([]byte, fileIDSize)
 	copy(k.FileID, data[1:1+fileIDSize])
 	o := 1 + fileIDSize

@@ -119,6 +119,7 @@ export async function encryptMcap(
     const keyId = await spkiFingerprint(pubKeys[i]!);
     const wrappedKey = await wrapSymmetricKey(symKey, pubKeys[i]!);
     const wkdBytes = encodeWrappedKeyData({
+      version: 3, // v3: manifest required on decrypt
       fileId,
       keyId,
       algorithm: "xchacha20poly1305",

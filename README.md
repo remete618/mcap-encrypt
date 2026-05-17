@@ -599,7 +599,7 @@ Both implementations agree on:
 - AEAD AAD v2 encoding: `file_id` (16 bytes) + `chunk_index` (uint64 LE) + `slot_id` + `compression` + `uncompressed_size` (uint64 LE) + `uncompressed_crc` (uint32 LE) + `message_start_time` (uint64 LE) + `message_end_time` (uint64 LE)
 - RSA-4096-OAEP-SHA-256 key wrapping (RSA recipients)
 - `EncryptedChunk` wire format (opcode `0x81`)
-- Wrapped key attachment format (version `0x02`, 16-byte `file_id`, length-prefixed fields)
+- Wrapped key attachment format (version `0x03`, 16-byte `file_id`, length-prefixed fields; `0x02` is accepted for legacy read-back)
 - PKCS#8 private key format (PEM label `PRIVATE KEY`)
 
 **Key wrapping scope:** The TypeScript library supports **RSA recipients only**. X25519 key wrapping and unwrapping is Go-only. A file encrypted with an X25519 public key cannot be decrypted by the TypeScript library. Use the Go CLI when X25519 recipients are involved.
@@ -637,7 +637,7 @@ The `data` payload (all strings and byte fields use 4-byte LE length prefixes):
 
 | Field | Description |
 |---|---|
-| version | `0x02` (uint8) |
+| version | `0x03` (uint8); `0x02` is accepted by decoders for legacy files. Version 3 requires a manifest attachment; decrypting without one fails. |
 | file_id | 16 random bytes; same across all recipients of the same file |
 | key_id | Hex-encoded SHA-256 of the recipient's SPKI public key DER encoding |
 | algorithm | `xchacha20poly1305` |

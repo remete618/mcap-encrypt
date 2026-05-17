@@ -134,17 +134,18 @@ func streamDecrypt(r io.Reader, w io.Writer, unwrap func(kekAlg string, wrappedK
 	}
 
 	var (
-		symKey          []byte
-		fileID          []byte
-		chunkIdx        uint64
-		wkaCount        int // number of wrapped-key attachments found
-		inputHdr        *mcap.Header
-		schemas         []*mcap.Schema
-		channels        []*mcap.Channel
-		attachments     []*mcap.Attachment // non-key plaintext attachments to pass through
-		metadataRecs    []*mcap.Metadata   // metadata records to pass through
-		manifestPayload []byte             // raw bytes from the manifest attachment
-		writer          *mcap.Writer
+		symKey           []byte
+		fileID           []byte
+		chunkIdx         uint64
+		wkaCount         int  // number of wrapped-key attachments found
+		manifestRequired bool // true when a v3+ key attachment is seen
+		inputHdr         *mcap.Header
+		schemas          []*mcap.Schema
+		channels         []*mcap.Channel
+		attachments      []*mcap.Attachment // non-key plaintext attachments to pass through
+		metadataRecs     []*mcap.Metadata   // metadata records to pass through
+		manifestPayload  []byte             // raw bytes from the manifest attachment
+		writer           *mcap.Writer
 	)
 
 	// ensureWriter initialises the McapWriter on first EncryptedChunk, writing
@@ -255,12 +256,16 @@ scan:
 			}
 
 			wkaCount++
-			if symKey != nil {
-				continue // already found a valid key
-			}
 			wkd, decErr := DecodeWrappedKeyData(attData)
 			if decErr != nil {
 				continue // malformed attachment; try the next one
+			}
+			// v3+ files always write a manifest; require it on decrypt.
+			if wkd.Version >= wrappedKeyVersion {
+				manifestRequired = true
+			}
+			if symKey != nil {
+				continue // already found a valid key
 			}
 			candidate, unwrapErr := unwrap(wkd.KEKAlg, wkd.WrappedKey)
 			if unwrapErr != nil {
@@ -323,8 +328,12 @@ scan:
 		return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file", wkaCount)
 	}
 
-	// Verify the manifest if present. Files written before manifest support was
-	// added will not have one; skip verification for backwards compatibility.
+	// v3+ files always write a manifest. Reject if it was stripped.
+	if manifestRequired && manifestPayload == nil {
+		return fmt.Errorf("manifest attachment missing: file may have been tampered with (strip attack). Re-encrypt with an older key attachment to opt out of this check.")
+	}
+
+	// Verify the manifest when present. v2 legacy files may lack one.
 	if manifestPayload != nil {
 		if len(manifestPayload) < manifestPayloadSize {
 			return fmt.Errorf("manifest payload too short (%d bytes, need %d)", len(manifestPayload), manifestPayloadSize)
