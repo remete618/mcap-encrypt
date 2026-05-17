@@ -1,4 +1,5 @@
 /mcap-encrypt
+/dist/
 *.mcap
 *.pem
 ts/dist/
