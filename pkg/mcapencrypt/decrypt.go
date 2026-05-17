@@ -315,7 +315,10 @@ scan:
 			return fmt.Errorf("manifest HMAC verification failed: file may be corrupted or tampered")
 		}
 		if storedCount != chunkIdx {
-			return fmt.Errorf("manifest chunk count mismatch: file declares %d chunk(s), decrypted %d (file may be truncated or padded)", storedCount, chunkIdx)
+			if storedCount < chunkIdx {
+				return fmt.Errorf("manifest chunk count mismatch: declared %d chunk(s), found %d (file may have been padded with extra chunks)", storedCount, chunkIdx)
+			}
+			return fmt.Errorf("manifest chunk count mismatch: declared %d chunk(s), found %d (file appears truncated)", storedCount, chunkIdx)
 		}
 	}
 

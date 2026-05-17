@@ -299,6 +299,7 @@ func WrapSymmetricKeyX25519(symKey []byte, recipientPub *ecdh.PublicKey) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("X25519 ECDH: %w", err)
 	}
+	defer clear(shared)
 	kek, err := deriveX25519KEK(shared)
 	if err != nil {
 		return nil, err
@@ -340,6 +341,7 @@ func UnwrapSymmetricKeyX25519(wrapped []byte, priv *ecdh.PrivateKey) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("X25519 ECDH: %w", err)
 	}
+	defer clear(shared)
 	kek, err := deriveX25519KEK(shared)
 	if err != nil {
 		return nil, err
