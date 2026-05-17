@@ -181,33 +181,33 @@ mcap-encrypt encrypt \
 # Either alice.priv.pem or bob.priv.pem can decrypt.
 ```
 
-### You + a visualization platform
+### You + Foxglove
 
-If a platform publishes its own public key, you can encrypt for both yourself and the platform in one step. The platform can then decrypt and index or display the file server-side using its own private key — without ever seeing your private key, and without you needing to upload a plaintext file.
+If Foxglove publishes its own public key, you can encrypt for both yourself and Foxglove in one step. Foxglove can then decrypt and index or display the file server-side using its own private key — without ever seeing your private key, and without you uploading a plaintext file.
 
 ```bash
 mcap-encrypt encrypt \
   --key your.pub.pem \
-  --key platform.pub.pem \
+  --key foxglove.pub.pem \
   recording.mcap encrypted.mcap
 ```
 
 What each party can do:
 
-| | Your private key | Platform private key |
+| | Your private key | Foxglove private key |
 |---|---|---|
 | Decrypt locally | ✅ | ✅ |
 | Visualize via bridge | ✅ | ✅ (server-side) |
 | Read plaintext MCAP | Never stored | Never stored |
 | See each other's key | ❌ | ❌ |
 
-The file is fully encrypted in transit and at storage. No party shares keys. The ciphertext is the same blob regardless of how many recipients were added.
+The file is fully encrypted in transit and at rest. No party shares keys. The ciphertext is the same blob regardless of how many recipients were added.
 
-### How to get a platform's public key
+### How to add Foxglove as a recipient
 
-If a visualization or data platform publishes a public key (e.g. `foxglove-platform.pub.pem`), simply include it with `--key`. The platform's ingest pipeline detects the matching `mcap_encryption_key` attachment, unwraps with its own private key, and indexes or serves the file normally. Users who do not include the platform key get an opaque file on the platform side — no messages, no content.
+Include Foxglove's published public key with `--key`. Foxglove's ingest pipeline detects the matching `mcap_encryption_key` attachment, unwraps with its own private key, and indexes or serves the file normally. Files uploaded without the Foxglove key are opaque on the platform side — no messages, no content.
 
-This model requires no protocol changes. The multi-recipient format is already fully implemented. Platforms only need to publish their public key and implement the unwrap step.
+This model requires no protocol changes. The multi-recipient format is already fully implemented.
 
 ---
 
@@ -453,15 +453,15 @@ mcap-encrypt encrypt --key alice.pub.pem --key bob.pub.pem input.mcap encrypted.
 # Either alice.priv.pem or bob.priv.pem can decrypt the result.
 ```
 
-To allow a platform to read the file alongside you, add the platform's public key:
+To allow Foxglove to read the file alongside you, add Foxglove's public key:
 
 ```bash
 mcap-encrypt encrypt \
   --key your.pub.pem \
-  --key platform.pub.pem \
+  --key foxglove.pub.pem \
   recording.mcap encrypted.mcap
 # You decrypt with your.priv.pem.
-# The platform decrypts with its own key.
+# Foxglove decrypts with its own key.
 # Neither key is shared. The ciphertext is identical for both recipients.
 ```
 
@@ -515,7 +515,7 @@ if err := mcapencrypt.Encrypt("input.mcap", "encrypted.mcap", "mykey.pub.pem"); 
 if err := mcapencrypt.EncryptMulti("input.mcap", "encrypted.mcap", []string{
     "alice.pub.pem",
     "bob.pub.pem",
-    "platform.pub.pem", // optional: platform can also decrypt
+    "foxglove.pub.pem", // optional: Foxglove can also decrypt server-side
 }); err != nil { ... }
 
 // Decrypt: produces a standard indexed MCAP
