@@ -144,7 +144,9 @@ func GenerateKeyPair(basename string) error {
 	if err != nil {
 		return fmt.Errorf("marshal private key: %w", err)
 	}
+	defer clear(privDER)
 	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
+	defer clear(privPEM)
 	if err := os.WriteFile(basename+".priv.pem", privPEM, 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
@@ -170,7 +172,9 @@ func GenerateX25519KeyPair(basename string) error {
 	if err != nil {
 		return fmt.Errorf("marshal private key: %w", err)
 	}
+	defer clear(privDER)
 	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
+	defer clear(privPEM)
 	if err := os.WriteFile(basename+".priv.pem", privPEM, 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
@@ -247,15 +251,18 @@ func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
 }
 
 // LoadPrivateKeyAny loads an RSA or X25519 private key from a PEM file.
+// The raw PEM and DER bytes are zeroed immediately after parsing.
 func LoadPrivateKeyAny(path string) (any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	defer clear(data) // zero PEM text (contains base64 of the key material)
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, fmt.Errorf("no PEM block in %s", path)
 	}
+	defer clear(block.Bytes) // zero DER bytes (raw key material)
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
 		return nil, err
