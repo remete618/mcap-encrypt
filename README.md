@@ -34,6 +34,7 @@ Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption 
 - [What it does](#what-it-does)
 - [Quick start](#quick-start)
 - [Security model](#security-model)
+- [Performance](#performance)
 - [Alternatives](#alternatives)
 
 **Reference**
@@ -191,6 +192,30 @@ For the full threat model, resolved findings, and test coverage details, see [SE
 
 ---
 
+## Performance
+
+Benchmarks run on **Apple M3** (arm64), Go 1.24, zstd compression. Source data uses synthetic sequential-byte payloads (highly compressible); throughput on real robot sensor data with lower compression ratios will be closer to the Medium row.
+
+| Scenario | Source file | Encrypt | Decrypt |
+|---|---|---|---|
+| Small — 100 msgs × 1 KB | ~105 KB | 5 MB/s | 0.4 MB/s |
+| Medium — 1 000 msgs × 4 KB | ~4 MB | 16 MB/s | 1.4 MB/s |
+| Large — 5 000 msgs × 64 KB | ~236 MB | 6.5 MB/s | 0.9 MB/s |
+
+Reproduce:
+
+```bash
+go test ./pkg/mcapencrypt/ -run='^$' -bench='BenchmarkEncrypt|BenchmarkDecrypt' -benchtime=5s
+```
+
+**Encrypt** is dominated by zstd compression of each chunk plus XChaCha20-Poly1305. The RSA-OAEP key wrap happens once per file and is negligible. **Decrypt** does more work: it decrypts each chunk, decompresses, and rebuilds a fully-indexed MCAP from scratch (decompress + recompress + reindex), which is why it is roughly 10× slower than encrypt for the same file.
+
+**TypeScript**: RSA wrapping uses the browser's native Web Crypto API. Bulk cipher work (`@noble/ciphers`) is pure JavaScript and is roughly 2–4× slower than Go for large files. For recordings over 500 MB, the Go CLI is recommended.
+
+**Inspect** (`mcap-encrypt inspect`) requires no decryption and runs at disk read speed regardless of file size.
+
+---
+
 ## Alternatives
 
 | Approach | MCAP-inspectable after encrypt | Per-chunk stream | Multi-recipient public-key | MCAP-native | 🦊 Foxglove Studio ready |
@@ -245,11 +270,12 @@ Requires Node.js 18+ (uses the built-in Web Crypto API). Works in modern browser
 ## CLI reference
 
 ```
-mcap-encrypt keygen  --out <basename>
-mcap-encrypt encrypt --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
-mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap> <output.mcap>
-mcap-encrypt rotate  --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
-mcap-encrypt bridge  --key <priv.pem> [--addr <host:port>] <encrypted.mcap>
+mcap-encrypt keygen   --out <basename>
+mcap-encrypt encrypt  --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+mcap-encrypt decrypt  --key <priv.pem> [--force] <input.mcap> <output.mcap>
+mcap-encrypt rotate   --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+mcap-encrypt inspect  <input.mcap>
+mcap-encrypt bridge   --key <priv.pem> [--addr <host:port>] <encrypted.mcap>
 ```
 
 ### keygen
@@ -315,6 +341,23 @@ mcap-encrypt rotate --old-key old.priv.pem --new-key alice.pub.pem --new-key bob
 | `--new-key <pub.pem>` | Path to a new RSA-4096 or X25519 public key. Repeatable. Required. |
 | `--force` | Overwrite output file if it exists. |
 
+### inspect
+
+Prints metadata from an encrypted (or plain) MCAP without decrypting. No private key required. Runs at disk read speed regardless of file size.
+
+```bash
+mcap-encrypt inspect recording.enc.mcap
+# file:         recording.enc.mcap  (312 MB)
+# encrypted:    yes  (format v3)
+# file_id:      3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c
+# chunks:       1024  (zstd)
+# attachments:  4 encrypted
+#
+# recipients (2):
+#   [1]  rsa-oaep-sha256                           8e957de8...
+#   [2]  x25519-hkdf-xchacha20poly1305             a1b2c3d4...
+```
+
 ### bridge
 
 Decrypts an encrypted MCAP file, loads all messages into memory, then serves them over the [Foxglove WebSocket protocol](https://github.com/foxglove/ws-protocol). Foxglove Studio connects to the bridge exactly as it connects to a live ROS 2 robot running `foxglove-bridge`: same protocol, same Studio UI, same workflow. A temporary file is written during loading and removed immediately; no persistent decrypted file remains on disk.
@@ -367,6 +410,10 @@ err := mcapencrypt.DecryptWithOptions(r, w, "mykey.priv.pem", mcapencrypt.Decryp
 
 // Rotate keys without re-encrypting chunk data
 if err := mcapencrypt.RotateKeyFile("encrypted.mcap", "rotated.mcap", "old.priv.pem", []string{"new.pub.pem"}); err != nil { ... }
+
+// Inspect metadata without a private key
+res, err := mcapencrypt.InspectFile("encrypted.mcap")
+// res.IsEncrypted, res.FileID, res.ChunkCount, res.Compression, res.Recipients
 
 // Bridge: load state once, serve many connections
 state, err := mcapencrypt.LoadBridgeState("encrypted.mcap", "mykey.priv.pem")
@@ -426,6 +473,7 @@ for await (const { schema, channel, message } of iterateMessages(enc, privateKey
 | `encryptMcap` | `(input: Uint8Array, pubKeyPem: string \| string[]) => Promise<Uint8Array>` | Encrypts a chunked MCAP in memory. Accepts RSA and X25519 public keys; mixed arrays are supported. |
 | `decryptMcap` | `(input: Uint8Array, privKeyPem: string, onWarn?: (msg: string) => void) => Promise<Uint8Array>` | Decrypts to a fully-indexed MCAP buffer. Optional `onWarn` called for non-fatal parse issues. |
 | `rotateMcapKeys` | `(input: Uint8Array, oldPrivKeyPem: string, newPubKeyPems: string \| string[]) => Promise<Uint8Array>` | Re-wraps the symmetric key for new recipients without decrypting chunk data. |
+| `inspectMcap` | `(input: Uint8Array) => InspectResult` | Returns metadata (file_id, chunk count, compression, recipients) without decrypting. No private key required. |
 | `iterateMessages` | `(input: Uint8Array, privKeyPem: string) => AsyncGenerator<{schema, channel, message}>` | Streams decrypted messages without materializing output. |
 
 **Browser compatibility:** Uses the Web Crypto API and `fzstd` (pure-TypeScript zstd). No WASM, no Node-specific APIs. Works in Chromium 89+, Firefox 90+, Safari 15+.
@@ -696,8 +744,8 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 ### Roadmap
 
 - Python library.
-- `mcap-encrypt inspect` command (shows metadata of an encrypted file without decrypting).
-- Key rotation without full re-encryption.
+- Streaming encrypt API (process files larger than RAM).
+- External security audit (gate for v1.0).
 
 ---
 
@@ -709,9 +757,9 @@ Issues and PRs welcome at [github.com/remete618/mcap-encrypt](https://github.com
 
 | # | Task | Difficulty | Issue |
 |---|---|---|---|
-| 1 | `mcap-encrypt inspect` command | medium | [#14](https://github.com/remete618/mcap-encrypt/issues/14) |
-| 2 | Browser smoke test (Vitest browser mode) | medium | [#17](https://github.com/remete618/mcap-encrypt/issues/17) |
-| 3 | Go benchmark script + README throughput table | medium | [#16](https://github.com/remete618/mcap-encrypt/issues/16) |
+| 1 | Browser smoke test (Vitest browser mode) | medium | [#17](https://github.com/remete618/mcap-encrypt/issues/17) |
+| 2 | Streaming encrypt API | medium | — |
+| 3 | Python library | high | — |
 
 Run tests locally before opening a PR:
 

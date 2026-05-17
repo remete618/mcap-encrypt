@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- **`inspect` command (Go and TypeScript)**: `InspectFile`/`Inspect` (Go) and `inspectMcap` (TypeScript) return file metadata — `IsEncrypted`, format version, `FileID`, chunk count, compression, and per-recipient `KeyID`+`KEKAlg` — without decrypting any chunk data. No private key required. CLI: `mcap-encrypt inspect <input.mcap>`. 4 Go tests, 4 TypeScript tests.
+- **Performance benchmarks in README**: `## Performance` section with throughput table (Small/Medium/Large) measured on Apple M3, covering encrypt and decrypt. Reproduce with `go test ./pkg/mcapencrypt/ -bench='BenchmarkEncrypt|BenchmarkDecrypt' -benchtime=5s`.
+
 ---
 
 ## [0.9.0]
