@@ -75,6 +75,34 @@ This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256
 
 **Fixed in:** commit `fix: guard ReadRecord against oversized length fields`
 
+### INT-2025-002: `ReadRecord` memory exhaustion via eager allocation within the size cap
+
+**Component:** `pkg/mcapencrypt/record.go`, function `ReadRecord`
+
+**Found by:** `FuzzStreamDecrypt` during internal testing (OOM-killed in CI after the INT-2025-001 cap was already in place). Not reported externally.
+
+**Trigger:** A record header declaring a length at or below the 4 GiB `maxRecordDataSize` cap while the stream supplies far fewer bytes. `data = make([]byte, length)` eagerly allocated the full declared size before reading, so a small hostile input could force a multi-GiB allocation. The INT-2025-001 cap rejects only values above 4 GiB; it does not prevent a ~4 GiB allocation from a value at or under the cap.
+
+**Impact:** Memory-exhaustion denial of service. A caller passing attacker-controlled bytes to the decrypt pipeline can drive a single allocation up to ~4 GiB (measured ~3.8 to 5.3 GiB peak RSS), OOM-killing the process. No data leakage, no decryption bypass, no authentication bypass.
+
+**Fix:** `ReadRecord` no longer pre-allocates the declared length. It reads via `io.ReadAll(io.LimitReader(r, int64(length)))`, so allocation tracks the bytes actually present, then confirms the full record was delivered or returns a truncation error. Peak RSS for the same fuzz workload dropped to ~190 MiB. The `maxRecordDataSize` cap is retained as a cheap upfront sanity bound.
+
+**Fixed in:** commit `fix: harden input parsing`
+
+### INT-2025-003: `parseAttachmentRecord` slice-bounds panic via signed cast of attachment `data_size`
+
+**Component:** `pkg/mcapencrypt/decrypt.go`, function `parseAttachmentRecord`
+
+**Found by:** `FuzzStreamDecrypt` during internal testing (surfaced once the INT-2025-002 fix removed the OOM that previously masked it). Not reported externally.
+
+**Trigger:** A crafted Attachment record whose 8-byte `data_size` field has the high bit set. `dataSize := int(binary.LittleEndian.Uint64(data[o:]))` converts it to a negative `int`, so the bounds check `o+dataSize > len(data)` passes (the negative value keeps the sum small) and `data[o : o+dataSize]` then panics with `slice bounds out of range [:-N]`. Reproducer committed at `pkg/mcapencrypt/testdata/fuzz/FuzzStreamDecrypt/fb736aa59e9c6bdc`.
+
+**Impact:** Panic (denial of service) from attacker-controlled bytes in the decrypt pipeline. No data leakage, no decryption bypass, no authentication bypass.
+
+**Fix:** `data_size` is kept as `uint64` and validated as `dataSize > uint64(len(data)-o)` before any conversion or slicing; the slice index is computed only after the value is proven to fit the remaining buffer. The committed fuzz seed is replayed as a regression test on every `go test`.
+
+**Fixed in:** commit `fix: harden input parsing`
+
 ## Test coverage
 
 All tests run on every CI push (`go test -race -count=1 ./...`).
@@ -121,7 +149,7 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 **Fuzz targets:**
 - `FuzzDecodeEncryptedChunk`
 - `FuzzDecodeWrappedKeyData`
-- `FuzzStreamDecrypt` (found INT-2025-001)
+- `FuzzStreamDecrypt` (found INT-2025-001, INT-2025-002, INT-2025-003)
 
 ### TypeScript: 21 unit tests
 

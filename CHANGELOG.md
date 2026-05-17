@@ -7,6 +7,9 @@ All notable changes to this project are documented here.
 ### Security
 - **INT-2025-001 resolved**: `ReadRecord` now returns an error instead of panicking when the 8-byte length field exceeds 4 GiB. Found by `FuzzStreamDecrypt`.
 - `writeChunkMessages`: replaced `int(length)` cast with a uint64-safe bounds check before conversion, eliminating a theoretical integer overflow on 32-bit hosts or with adversarially large length fields.
+- **INT-2025-002 resolved**: `ReadRecord` no longer pre-allocates the declared record length; reads are bounded to the bytes actually present (`io.LimitReader`), closing a memory-exhaustion DoS the 4 GiB cap did not prevent. Found by `FuzzStreamDecrypt`.
+- **INT-2025-003 resolved**: `parseAttachmentRecord` keeps the attachment `data_size` as `uint64` with a pre-slice bounds check, eliminating a negative-`int` cast that defeated the length check and panicked. Reproducer committed as a fuzz regression seed. Found by `FuzzStreamDecrypt`.
+- The three Go fuzz targets now run on every CI push (30s each), not only as on-demand local runs.
 - `GenerateKeyPair` and `GenerateX25519KeyPair` now refuse to run if either output file already exists, preventing silent key clobber.
 - Threat model, attacker assumptions, unauthenticated summary explanation, FileID binding, and format version behavior documented in `.github/SECURITY.md`.
 - TypeScript key material not-zeroed limitation documented in `.github/SECURITY.md` (JS runtime provides no guaranteed memory-wipe primitive).
