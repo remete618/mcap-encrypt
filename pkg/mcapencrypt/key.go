@@ -287,6 +287,12 @@ func UnwrapSymmetricKey(wrapped []byte, priv *rsa.PrivateKey) ([]byte, error) {
 
 // WrapSymmetricKeyX25519 wraps symKey using X25519-HKDF-XChaCha20Poly1305.
 // Output format: ephemeral_pub(32) || nonce(24) || ciphertext(32+16=48) = 104 bytes.
+//
+// This construction is equivalent to HPKE (RFC 9180) with ciphersuite
+// DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20Poly1305 (0x0020).
+// A custom HKDF info label ("mcap-encrypt x25519 v1") is used instead of
+// the HPKE suite_id encoding because golang.org/x/crypto does not yet expose
+// a stable HPKE API; the underlying DH math and AEAD are identical.
 func WrapSymmetricKeyX25519(symKey []byte, recipientPub *ecdh.PublicKey) ([]byte, error) {
 	if recipientPub.Curve() != ecdh.X25519() {
 		return nil, fmt.Errorf("recipient key must use X25519 curve")
