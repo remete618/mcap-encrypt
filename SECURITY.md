@@ -28,9 +28,78 @@ In scope:
 Out of scope:
 - Plaintext schema and channel metadata (intentional by design)
 - Attachment content not being encrypted (documented known limitation)
-- Vulnerabilities in dependencies — please report those upstream
+- Vulnerabilities in dependencies (please report those upstream)
 
 ## Security status
 
 This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256, X25519-HKDF-XChaCha20Poly1305) and has
 adversarial unit tests. It has **not** been externally audited. Use accordingly.
+
+## Resolved findings
+
+### INT-2025-001: `ReadRecord` panic on oversized length field
+
+**Component:** `pkg/mcapencrypt/record.go`, function `ReadRecord`
+
+**Found by:** `FuzzStreamDecrypt` during internal testing. Not reported externally.
+
+**Trigger:** A crafted MCAP byte stream where the 8-byte little-endian length field in a record header decodes to a value exceeding addressable memory. The fuzz seed entry `\x89MCAP0\r\n` + 9 bytes of `0x30` produces a length field of `0x3030303030303030` (approx. 3.47 EiB). Go's runtime panics with `makeslice: len out of range` at the `make([]byte, length)` call inside `ReadRecord`.
+
+**Impact:** Any caller passing attacker-controlled bytes to the decrypt pipeline can trigger a panic. No data leakage, no decryption bypass, no authentication bypass.
+
+**Fix:** Added `maxRecordDataSize = 1 << 32` (4 GiB) constant. `ReadRecord` returns an error before any allocation if the length field exceeds this limit. No real MCAP record approaches 4 GiB; values above this indicate corrupt or adversarial input.
+
+**Fixed in:** commit `fix: guard ReadRecord against oversized length fields`
+
+## Test coverage
+
+All tests run on every CI push (`go test -race -count=1 ./...`).
+
+### Go: 40 unit tests, 3 fuzz targets
+
+**Round-trip:**
+- RSA-4096-OAEP-SHA-256 key wrapping and unwrapping
+- X25519-HKDF-XChaCha20Poly1305 key wrapping and unwrapping
+- Multiple recipients, mixed algorithms (one RSA, one X25519 in the same file)
+- RSA key rejected when attempting to decrypt an X25519-encrypted file
+
+**Adversarial:**
+- Ciphertext tamper (AEAD tag failure)
+- Nonce tamper (AEAD tag failure)
+- AAD tamper (AEAD tag failure)
+- Wrong private key
+- Manifest HMAC forge detection
+- Manifest strip attack rejected under v3 (strip-attack prevention)
+- Manifest tampered record count rejected
+- Tail truncation detected via manifest
+
+**Format integrity:**
+- EncryptedChunk opcode (`0x81`) present in output
+- ChunkIndex (`0x08`) and Statistics (`0x0A`) present in summary section
+- WrappedKeyAttachment and ManifestAttachment present
+- Schema (`0x03`) and Channel (`0x04`) records readable without a key
+- Plaintext Message (`0x05`) absent from encrypted output
+
+**Edge cases:**
+- Empty MCAP input
+- Non-chunked MCAP input rejected
+- LZ4-compressed input rejected (unsupported compression)
+- Truncated file returns error, not panic
+- Output file not created on failure
+- Overwrite protection for both encrypt and decrypt
+- Same input and output path rejected
+- Private key material zeroed after use (RSA and X25519)
+- Metadata passthrough, attachment passthrough, header profile preserved
+
+**Fuzz targets:**
+- `FuzzDecodeEncryptedChunk`
+- `FuzzDecodeWrappedKeyData`
+- `FuzzStreamDecrypt` (found INT-2025-001)
+
+### TypeScript: 21 unit tests
+
+Covers RSA-4096 and X25519 key wrapping, tamper detection, and format compatibility with the Go implementation.
+
+### Cross-language interop: 2 tests
+
+Go encrypts, TypeScript decrypts. TypeScript encrypts, Go decrypts. Run as a dedicated CI job on every push.
