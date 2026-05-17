@@ -21,11 +21,12 @@ var version = "dev"
 const usage = `mcap-encrypt: encrypt and decrypt MCAP files with XChaCha20-Poly1305 + RSA-OAEP-SHA-256
 
 Usage:
-  mcap-encrypt keygen  --out <basename>
-  mcap-encrypt encrypt --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
-  mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap> <output.mcap>
-  mcap-encrypt rotate  --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
-  mcap-encrypt bridge  --key <priv.pem> [--addr <host:port>] <encrypted.mcap>
+  mcap-encrypt keygen   --out <basename>
+  mcap-encrypt encrypt  --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+  mcap-encrypt decrypt  --key <priv.pem> [--force] <input.mcap> <output.mcap>
+  mcap-encrypt rotate   --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+  mcap-encrypt inspect  <input.mcap>
+  mcap-encrypt bridge   --key <priv.pem> [--addr <host:port>] <encrypted.mcap>
 
 Commands:
   keygen   Generate an RSA-4096 key pair.
@@ -46,6 +47,10 @@ Commands:
            --old-key: the private key that can currently decrypt the file.
            --new-key: one or more public keys for the new recipient set (repeatable).
            Press Ctrl-Z to pause, fg to resume.
+
+  inspect  Print metadata from an encrypted (or plain) MCAP without decrypting.
+           Shows: format version, file_id, chunk count, compression, and per-recipient
+           key fingerprints and algorithms. No private key required.
 
   bridge   Start a Foxglove WebSocket bridge for an encrypted MCAP file.
            Decrypts in memory and serves over the Foxglove ws-protocol.
@@ -70,6 +75,8 @@ func main() {
 		runDecrypt(os.Args[2:])
 	case "rotate":
 		runRotate(os.Args[2:])
+	case "inspect":
+		runInspect(os.Args[2:])
 	case "bridge":
 		runBridge(os.Args[2:])
 	default:
@@ -426,6 +433,51 @@ func runRotate(args []string) {
 		fatal(err)
 	}
 	fmt.Printf("done  %.2fs%s\n", elapsed.Seconds(), formatThroughput(output, elapsed))
+}
+
+func runInspect(args []string) {
+	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
+	_ = fs.Parse(args)
+
+	if fs.NArg() != 1 {
+		fatal(fmt.Errorf("usage: inspect <input.mcap>"))
+	}
+	path := fs.Arg(0)
+
+	res, err := mcapencrypt.InspectFile(path)
+	if err != nil {
+		fatal(err)
+	}
+
+	info, _ := os.Stat(path)
+	sizeStr := ""
+	if info != nil {
+		sizeStr = "  (" + formatSize(info.Size()) + ")"
+	}
+	fmt.Printf("file:         %s%s\n", path, sizeStr)
+
+	if !res.IsEncrypted {
+		fmt.Println("encrypted:    no")
+		return
+	}
+
+	fmt.Printf("encrypted:    yes  (format v%d)\n", res.FormatVersion)
+	fmt.Printf("file_id:      %x\n", res.FileID)
+
+	compNote := ""
+	if res.Compression != "" {
+		compNote = "  (" + res.Compression + ")"
+	}
+	fmt.Printf("chunks:       %d%s\n", res.EncryptedChunkCount, compNote)
+
+	if res.EncryptedAttachmentCount > 0 {
+		fmt.Printf("attachments:  %d encrypted\n", res.EncryptedAttachmentCount)
+	}
+
+	fmt.Printf("\nrecipients (%d):\n", len(res.Recipients))
+	for i, r := range res.Recipients {
+		fmt.Printf("  [%d]  %-40s  %s\n", i+1, r.KEKAlg, r.KeyID)
+	}
 }
 
 func runBridge(args []string) {
