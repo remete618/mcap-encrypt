@@ -1,7 +1,9 @@
 package mcapencrypt
 
 import (
+	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -15,7 +17,7 @@ import (
 	"github.com/foxglove/mcap/go/mcap"
 )
 
-// Encrypt encrypts a standard MCAP file using a single RSA public key.
+// Encrypt encrypts a standard MCAP file using a single RSA or X25519 public key.
 func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 	return EncryptMulti(inputPath, outputPath, []string{pubKeyPath})
 }
@@ -29,9 +31,8 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 //   - inputPath and outputPath must differ.
 //   - At least one public key must be provided.
 //
-// The encryption is single-pass over the input after an initial schema/channel
-// scan: each chunk is encrypted and written to the output immediately without
-// buffering the full file in memory.
+// Public keys may be RSA (any size) or X25519. Mixed-algorithm recipient lists
+// are supported.
 func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr error) {
 	if len(pubKeyPaths) == 0 {
 		return fmt.Errorf("at least one public key is required")
@@ -65,7 +66,7 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 	// Wrap the symmetric key for each recipient.
 	wkds := make([]*WrappedKeyData, len(pubKeyPaths))
 	for i, path := range pubKeyPaths {
-		pub, loadErr := LoadPublicKey(path)
+		pub, loadErr := LoadPublicKeyAny(path)
 		if loadErr != nil {
 			return fmt.Errorf("load public key %d: %w", i+1, loadErr)
 		}
@@ -73,7 +74,19 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 		if fpErr != nil {
 			return fmt.Errorf("fingerprint key %d: %w", i+1, fpErr)
 		}
-		wrapped, wrapErr := WrapSymmetricKey(symKey, pub)
+		var wrapped []byte
+		var kekAlg string
+		var wrapErr error
+		switch k := pub.(type) {
+		case *rsa.PublicKey:
+			kekAlg = "rsa-oaep-sha256"
+			wrapped, wrapErr = WrapSymmetricKey(symKey, k)
+		case *ecdh.PublicKey:
+			kekAlg = "x25519-hkdf-xchacha20poly1305"
+			wrapped, wrapErr = WrapSymmetricKeyX25519(symKey, k)
+		default:
+			return fmt.Errorf("unsupported public key type %T for recipient %d", pub, i+1)
+		}
 		if wrapErr != nil {
 			return fmt.Errorf("wrap key for recipient %d: %w", i+1, wrapErr)
 		}
@@ -81,7 +94,7 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 			FileID:     fileID,
 			KeyID:      fingerprint,
 			Algorithm:  "xchacha20poly1305",
-			KEKAlg:     "rsa-oaep-sha256",
+			KEKAlg:     kekAlg,
 			WrappedKey: wrapped,
 		}
 	}
@@ -167,11 +180,15 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 		return err
 	}
 
-	const keyID = "key-1"
+	const slotID = "key-1"
 	now := uint64(time.Now().UnixNano())
 
-	// flushed tracks whether schemas, channels, and key attachments have been
-	// written. They must appear before the first EncryptedChunk record.
+	// manifestDataFileOffset tracks where in tmpFile the manifest payload lives
+	// so we can patch the chunk count and HMAC after all chunks are written.
+	var manifestDataFileOffset int64
+
+	// flushed tracks whether schemas, channels, key attachments, and the manifest
+	// placeholder have been written. They must appear before the first EncryptedChunk.
 	var flushed bool
 	flushPending := func() error {
 		if flushed {
@@ -188,6 +205,20 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string) (retErr er
 			if err := WriteRecord(tmpFile, opcodeAttach, attBytes); err != nil {
 				return err
 			}
+		}
+		// Write a manifest placeholder so we can patch it with the real chunk count
+		// and HMAC after all chunks have been encrypted.
+		curOffset, seekErr := tmpFile.Seek(0, io.SeekCurrent)
+		if seekErr != nil {
+			return fmt.Errorf("seek for manifest offset: %w", seekErr)
+		}
+		// The manifest data field is at: record header (9) + payload offset (83)
+		// after the start of this record.
+		manifestDataFileOffset = curOffset + 9 + int64(manifestDataOffsetInPayload)
+		placeholder := make([]byte, manifestPayloadSize)
+		attBytes := buildAttachmentBytes(now, 0, ManifestAttachmentName, ManifestAttachmentMediaType, placeholder)
+		if err := WriteRecord(tmpFile, opcodeAttach, attBytes); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -258,7 +289,7 @@ outer:
 			}
 			// encryptChunk is called synchronously before the next lexer.Next(),
 			// so chunk.Records (which aliases tokenBuf) is still valid here.
-			ec, encErr := encryptChunk(chunk, symKey, keyID, fileID, chunkIdx)
+			ec, encErr := encryptChunk(chunk, symKey, slotID, fileID, chunkIdx)
 			if encErr != nil {
 				return fmt.Errorf("encrypt chunk %d: %w", chunkIdx, encErr)
 			}
@@ -271,6 +302,14 @@ outer:
 			// Flush in case there were no chunks (schema/channel-only files).
 			if err := flushPending(); err != nil {
 				return err
+			}
+			// Patch the manifest placeholder with the real chunk count and HMAC.
+			var manifestPayload [manifestPayloadSize]byte
+			binary.LittleEndian.PutUint64(manifestPayload[:8], uint64(chunkIdx))
+			mac := ComputeManifestHMAC(symKey, uint64(chunkIdx), fileID)
+			copy(manifestPayload[8:], mac)
+			if _, err := tmpFile.WriteAt(manifestPayload[:], manifestDataFileOffset); err != nil {
+				return fmt.Errorf("patch manifest: %w", err)
 			}
 			if err := WriteRecord(tmpFile, opcodeDataEnd, data); err != nil {
 				return err
@@ -312,20 +351,20 @@ var passthroughOpcode = map[mcap.TokenType]byte{
 }
 
 // chunkAAD builds the AEAD additional data for one encrypted chunk.
-// It binds: file identity, chunk position, key identity, compression
+// It binds: file identity, chunk position, slot identity, compression
 // parameters, and time bounds. Any modification to these plaintext fields
 // or the ciphertext will cause authentication to fail.
-func chunkAAD(fileID []byte, chunkIdx uint64, keyID, compression string, uncompressedSize uint64, uncompressedCRC uint32, startTime, endTime uint64) []byte {
+func chunkAAD(fileID []byte, chunkIdx uint64, slotID, compression string, uncompressedSize uint64, uncompressedCRC uint32, startTime, endTime uint64) []byte {
 	putStr := func(buf []byte, s string) []byte {
 		var n [4]byte
 		binary.LittleEndian.PutUint32(n[:], uint32(len(s)))
 		buf = append(buf, n[:]...)
 		return append(buf, s...)
 	}
-	buf := make([]byte, 0, fileIDSize+8+4+len(keyID)+4+len(compression)+8+4+8+8)
+	buf := make([]byte, 0, fileIDSize+8+4+len(slotID)+4+len(compression)+8+4+8+8)
 	buf = append(buf, fileID...)
 	buf = binary.LittleEndian.AppendUint64(buf, chunkIdx)
-	buf = putStr(buf, keyID)
+	buf = putStr(buf, slotID)
 	buf = putStr(buf, compression)
 	buf = binary.LittleEndian.AppendUint64(buf, uncompressedSize)
 	buf = binary.LittleEndian.AppendUint32(buf, uncompressedCRC)
@@ -334,7 +373,7 @@ func chunkAAD(fileID []byte, chunkIdx uint64, keyID, compression string, uncompr
 	return buf
 }
 
-func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string, fileID []byte, chunkIdx int) (*EncryptedChunk, error) {
+func encryptChunk(chunk *mcap.Chunk, symKey []byte, slotID string, fileID []byte, chunkIdx int) (*EncryptedChunk, error) {
 	records := chunk.Records
 	compression := string(chunk.Compression)
 
@@ -361,7 +400,7 @@ func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string, fileID []byte,
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	aad := chunkAAD(fileID, uint64(chunkIdx), keyID, compression, chunk.UncompressedSize, chunk.UncompressedCRC, chunk.MessageStartTime, chunk.MessageEndTime)
+	aad := chunkAAD(fileID, uint64(chunkIdx), slotID, compression, chunk.UncompressedSize, chunk.UncompressedCRC, chunk.MessageStartTime, chunk.MessageEndTime)
 	ciphertext := aead.Seal(nil, nonce, records, aad)
 
 	return &EncryptedChunk{
@@ -370,7 +409,7 @@ func encryptChunk(chunk *mcap.Chunk, symKey []byte, keyID string, fileID []byte,
 		UncompressedSize: chunk.UncompressedSize,
 		UncompressedCRC:  chunk.UncompressedCRC,
 		Compression:      compression,
-		KeyID:            keyID,
+		SlotID:           slotID,
 		Nonce:            nonce,
 		EncryptedData:    ciphertext,
 	}, nil

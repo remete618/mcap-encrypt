@@ -14,7 +14,7 @@ import (
 //	uint64 uncompressed_size   — plaintext, for post-decrypt verification
 //	uint32 uncompressed_crc    — plaintext, CRC32 of decompressed records
 //	string compression         — plaintext ("zstd", "lz4", or "")
-//	string key_id              — plaintext, content-key slot identifier; currently always "key-1"
+//	string slot_id             — plaintext, content-key slot identifier; currently always "key-1"
 //	bytes  nonce               — 24 bytes (XChaCha20Poly1305 nonce)
 //	bytes  encrypted_data      — ciphertext of the original compressed records
 type EncryptedChunk struct {
@@ -23,18 +23,18 @@ type EncryptedChunk struct {
 	UncompressedSize uint64
 	UncompressedCRC  uint32
 	Compression      string
-	KeyID            string
+	SlotID           string
 	Nonce            []byte
 	EncryptedData    []byte
 }
 
 func (c *EncryptedChunk) Encode() []byte {
 	comp := []byte(c.Compression)
-	keyID := []byte(c.KeyID)
+	slotID := []byte(c.SlotID)
 
 	n := 8 + 8 + 8 + 4 +
 		4 + len(comp) +
-		4 + len(keyID) +
+		4 + len(slotID) +
 		4 + len(c.Nonce) +
 		4 + len(c.EncryptedData)
 
@@ -50,7 +50,7 @@ func (c *EncryptedChunk) Encode() []byte {
 	put64(c.UncompressedSize)
 	put32(c.UncompressedCRC)
 	putBytes(comp)
-	putBytes(keyID)
+	putBytes(slotID)
 	putBytes(c.Nonce)
 	putBytes(c.EncryptedData)
 
@@ -90,8 +90,8 @@ func DecodeEncryptedChunk(data []byte) (*EncryptedChunk, error) {
 	if c.Compression, err = getString(); err != nil {
 		return nil, fmt.Errorf("read compression: %w", err)
 	}
-	if c.KeyID, err = getString(); err != nil {
-		return nil, fmt.Errorf("read key_id: %w", err)
+	if c.SlotID, err = getString(); err != nil {
+		return nil, fmt.Errorf("read slot_id: %w", err)
 	}
 	if c.Nonce, err = getBytes(); err != nil {
 		return nil, fmt.Errorf("read nonce: %w", err)

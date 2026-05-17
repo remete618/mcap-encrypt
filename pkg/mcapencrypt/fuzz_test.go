@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -16,7 +18,7 @@ func FuzzDecodeEncryptedChunk(f *testing.F) {
 		UncompressedSize: 100,
 		UncompressedCRC:  0,
 		Compression:      "zstd",
-		KeyID:            "key-1",
+		SlotID:           "key-1",
 		Nonce:            make([]byte, 24),
 		EncryptedData:    make([]byte, 64),
 	}
@@ -34,14 +36,22 @@ func FuzzDecodeEncryptedChunk(f *testing.F) {
 
 // FuzzDecodeWrappedKeyData verifies the WrappedKeyData parser does not panic on arbitrary input.
 func FuzzDecodeWrappedKeyData(f *testing.F) {
-	valid := &WrappedKeyData{
+	validRSA := &WrappedKeyData{
 		FileID:     make([]byte, fileIDSize),
 		KeyID:      "aabbccdd",
 		Algorithm:  "xchacha20poly1305",
 		KEKAlg:     "rsa-oaep-sha256",
 		WrappedKey: make([]byte, 256),
 	}
-	f.Add(valid.Encode())
+	validX25519 := &WrappedKeyData{
+		FileID:     make([]byte, fileIDSize),
+		KeyID:      "aabbccdd",
+		Algorithm:  "xchacha20poly1305",
+		KEKAlg:     "x25519-hkdf-xchacha20poly1305",
+		WrappedKey: make([]byte, 104),
+	}
+	f.Add(validRSA.Encode())
+	f.Add(validX25519.Encode())
 	f.Add([]byte{})
 	f.Add([]byte{2}) // valid version byte, truncated after
 
@@ -55,9 +65,17 @@ func FuzzDecodeWrappedKeyData(f *testing.F) {
 
 // FuzzStreamDecrypt verifies the full decrypt pipeline does not panic on arbitrary byte input.
 func FuzzStreamDecrypt(f *testing.F) {
+	// RSA-2048 is intentional here: the fuzz test exercises the parsing logic,
+	// not key strength. Smaller keys keep corpus generation fast.
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		f.Fatalf("generate RSA key: %v", err)
+	}
+	unwrap := func(kekAlg string, wrappedKey []byte) ([]byte, error) {
+		if kekAlg != "rsa-oaep-sha256" {
+			return nil, fmt.Errorf("unsupported kek_alg %q in fuzz seed", kekAlg)
+		}
+		return rsa.DecryptOAEP(sha256.New(), rand.Reader, priv, wrappedKey, nil)
 	}
 
 	// Seed: bare MCAP magic only — produces "no wrapped key" error, not a panic.
@@ -66,6 +84,6 @@ func FuzzStreamDecrypt(f *testing.F) {
 	f.Add([]byte("not mcap at all"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = streamDecrypt(bytes.NewReader(data), io.Discard, priv)
+		_ = streamDecrypt(bytes.NewReader(data), io.Discard, unwrap)
 	})
 }

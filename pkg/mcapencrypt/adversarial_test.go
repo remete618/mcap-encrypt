@@ -40,13 +40,19 @@ func TestTamperedNonce(t *testing.T) {
 
 	data, err := os.ReadFile(encPath)
 	require.NoError(t, err)
-	recStart, _ := findFirstEncryptedChunk(t, data)
+	recStart, recLen := findFirstEncryptedChunk(t, data)
 
-	// Nonce is at offset 49 inside the record data:
-	// 8+8+8+4 (timestamps+sizes+crc) + 4+4 (compression "zstd") + 4+5 (keyId "key-1") + 4 (nonce len prefix) = 49
+	// Decode the chunk to find the nonce offset structurally rather than with a
+	// hardcoded constant, so the test survives changes to slot_id or compression.
+	ec, parseErr := mcapencrypt.DecodeEncryptedChunk(data[recStart : recStart+recLen])
+	require.NoError(t, parseErr)
+
+	// nonce is at: fixed fields(28) + compression string(4+len) + slot_id string(4+len) + nonce len prefix(4)
+	nonceOffset := 28 + 4 + len(ec.Compression) + 4 + len(ec.SlotID) + 4
+
 	tampered := make([]byte, len(data))
 	copy(tampered, data)
-	tampered[recStart+49] ^= 0xFF
+	tampered[recStart+nonceOffset] ^= 0xFF
 
 	require.NoError(t, os.WriteFile(encPath, tampered, 0o644))
 	err = mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem")

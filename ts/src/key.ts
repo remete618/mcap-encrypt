@@ -3,6 +3,11 @@ import { BinaryReader, BinaryWriter } from "./binary.js";
 export const ATTACHMENT_NAME = "mcap_encryption_key";
 export const ATTACHMENT_MEDIA_TYPE = "application/x-mcap-wrapped-key";
 
+export const MANIFEST_ATTACHMENT_NAME = "mcap_encryption_manifest";
+export const MANIFEST_ATTACHMENT_MEDIA_TYPE = "application/x-mcap-manifest";
+// manifestPayloadSize: chunk_count (uint64 LE) + HMAC-SHA256 (32 bytes)
+export const MANIFEST_PAYLOAD_SIZE = 8 + 32;
+
 const FILE_ID_SIZE = 16;
 const WRAPPED_KEY_VERSION = 2;
 
@@ -32,11 +37,8 @@ export function decodeWrappedKeyData(data: Uint8Array): WrappedKeyData {
   if (wkd.algorithm !== "xchacha20poly1305") {
     throw new Error(`unsupported encryption algorithm "${wkd.algorithm}" (want xchacha20poly1305)`);
   }
-  if (wkd.kekAlg !== "rsa-oaep-sha256") {
-    throw new Error(`unsupported key-wrapping algorithm "${wkd.kekAlg}" (want rsa-oaep-sha256)`);
-  }
-  if (wkd.wrappedKey.length !== 256) {
-    throw new Error(`wrapped key length ${wkd.wrappedKey.length} invalid (RSA-2048 produces 256 bytes)`);
+  if (wkd.kekAlg !== "rsa-oaep-sha256" && wkd.kekAlg !== "x25519-hkdf-xchacha20poly1305") {
+    throw new Error(`unsupported key-wrapping algorithm "${wkd.kekAlg}"`);
   }
   return wkd;
 }
@@ -106,6 +108,25 @@ export async function unwrapSymmetricKey(wrappedKey: Uint8Array, privateKeyPem: 
   return new Uint8Array(symKey);
 }
 
+// computeManifestHMAC returns HMAC-SHA256(symKey, chunkCount_le8 || fileId).
+// Mirrors the Go ComputeManifestHMAC function for cross-language compatibility.
+export async function computeManifestHMAC(
+  symKey: Uint8Array,
+  chunkCount: bigint,
+  fileId: Uint8Array,
+): Promise<Uint8Array> {
+  const keyBuf = new ArrayBuffer(symKey.length);
+  new Uint8Array(keyBuf).set(symKey);
+  const hmacKey = await crypto.subtle.importKey(
+    "raw", keyBuf, { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const dataBuf = new ArrayBuffer(8 + fileId.length);
+  new DataView(dataBuf).setBigUint64(0, chunkCount, true);
+  new Uint8Array(dataBuf, 8).set(fileId);
+  const mac = await crypto.subtle.sign("HMAC", hmacKey, dataBuf);
+  return new Uint8Array(mac);
+}
+
 export interface KeyPair {
   publicKeyPem: string;
   privateKeyPem: string;
@@ -115,7 +136,7 @@ export async function generateKeyPair(): Promise<KeyPair> {
   const { publicKey, privateKey } = await crypto.subtle.generateKey(
     {
       name: "RSA-OAEP",
-      modulusLength: 2048,
+      modulusLength: 4096,
       publicExponent: new Uint8Array([1, 0, 1]),
       hash: "SHA-256",
     },

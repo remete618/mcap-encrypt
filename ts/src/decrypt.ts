@@ -18,6 +18,10 @@ import { decodeEncryptedChunk } from "./chunk.js";
 import {
   ATTACHMENT_NAME,
   ATTACHMENT_MEDIA_TYPE,
+  MANIFEST_ATTACHMENT_NAME,
+  MANIFEST_ATTACHMENT_MEDIA_TYPE,
+  MANIFEST_PAYLOAD_SIZE,
+  computeManifestHMAC,
   decodeWrappedKeyData,
   unwrapSymmetricKey,
 } from "./key.js";
@@ -48,6 +52,15 @@ const OP_METADATA_INDEX = 0x0d;
 const OP_SUMMARY_OFFSET = 0x0e;
 
 const MCAP_MAGIC = new Uint8Array([0x89, 0x4d, 0x43, 0x41, 0x50, 0x30, 0x0d, 0x0a]);
+
+// timingSafeEqual compares two Uint8Arrays in constant time to prevent
+// timing side-channel attacks in HMAC verification.
+function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
+  return diff === 0;
+}
 
 function parseAttachment(data: Uint8Array): {
   name: string;
@@ -343,7 +356,7 @@ async function decryptAndVerifyChunk(
     );
   }
   const aad = chunkAAD(
-    fileId, chunkIdx, ec.keyId, ec.compression,
+    fileId, chunkIdx, ec.slotId, ec.compression,
     ec.uncompressedSize, ec.uncompressedCrc,
     ec.messageStartTime, ec.messageEndTime,
   );
@@ -472,6 +485,7 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
   const messages: Message[] = [];
   const plainAttachments: Uint8Array[] = [];
   const metadataRecs: Metadata[] = [];
+  let manifestPayload: Uint8Array | undefined;
 
   scan: while (r.remaining > 0) {
     const rec = readRecord(r);
@@ -503,6 +517,9 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
           if (!unwrapped) {
             unwrapped = await tryUnwrapKey(att.data, privateKeyPem);
           }
+        } else if (att.name === MANIFEST_ATTACHMENT_NAME && att.mediaType === MANIFEST_ATTACHMENT_MEDIA_TYPE) {
+          // Buffer for post-scan integrity verification.
+          manifestPayload = new Uint8Array(att.data);
         } else {
           plainAttachments.push(new Uint8Array(data));
         }
@@ -525,6 +542,27 @@ export async function decryptMcap(input: Uint8Array, privateKeyPem: string): Pro
   if (!unwrapped) {
     if (wkaCount === 0) throw new Error("no wrapped key attachment found: is this an encrypted MCAP file?");
     throw new Error(`private key does not match any of the ${wkaCount} recipient key(s) in this file`);
+  }
+
+  // Verify manifest if present. Files written before manifest support was added
+  // will not have one; skip verification for backwards compatibility.
+  if (manifestPayload != null) {
+    if (manifestPayload.length < MANIFEST_PAYLOAD_SIZE) {
+      throw new Error(`manifest payload too short (${manifestPayload.length} bytes, need ${MANIFEST_PAYLOAD_SIZE})`);
+    }
+    const storedCount = new DataView(manifestPayload.buffer, manifestPayload.byteOffset).getBigUint64(0, true);
+    const storedHmac = manifestPayload.slice(8, 8 + 32);
+    // Compute expected HMAC over storedCount so that tampering the count field
+    // is caught here, not only by the count comparison below.
+    const expectedHmac = await computeManifestHMAC(unwrapped.symKey, storedCount, unwrapped.fileId);
+    if (!timingSafeEqual(storedHmac, expectedHmac)) {
+      throw new Error("manifest HMAC verification failed: file may be corrupted or tampered");
+    }
+    if (storedCount !== chunkIdx) {
+      throw new Error(
+        `manifest chunk count mismatch: file declares ${storedCount} chunk(s), decrypted ${chunkIdx} (file may be truncated or padded)`,
+      );
+    }
   }
 
   return buildIndexedMcap(schemas, channels, messages, plainAttachments, metadataRecs, inputProfile, inputLibrary);

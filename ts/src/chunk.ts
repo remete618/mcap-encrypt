@@ -6,7 +6,7 @@ export interface EncryptedChunk {
   uncompressedSize: bigint;
   uncompressedCrc: number;
   compression: string;
-  keyId: string;
+  slotId: string;
   nonce: Uint8Array;
   encryptedData: Uint8Array;
 }
@@ -19,7 +19,7 @@ export function decodeEncryptedChunk(data: Uint8Array): EncryptedChunk {
     uncompressedSize: r.readUint64(),
     uncompressedCrc: r.readUint32(),
     compression: r.readString(),
-    keyId: r.readString(),
+    slotId: r.readString(),
     nonce: new Uint8Array(r.readPrefixedBytes()),
     encryptedData: new Uint8Array(r.readPrefixedBytes()),
   };
@@ -32,7 +32,7 @@ export function encodeEncryptedChunk(ec: EncryptedChunk): Uint8Array {
   w.writeUint64(ec.uncompressedSize);
   w.writeUint32(ec.uncompressedCrc);
   w.writeString(ec.compression);
-  w.writeString(ec.keyId);
+  w.writeString(ec.slotId);
   w.writePrefixedBytes(ec.nonce);
   w.writePrefixedBytes(ec.encryptedData);
   return w.toUint8Array();

@@ -14,7 +14,7 @@ import (
 
 var version = "dev"
 
-const usage = `mcap-encrypt: encrypt and decrypt MCAP files with XChaCha20-Poly1305 + RSA-2048
+const usage = `mcap-encrypt: encrypt and decrypt MCAP files with XChaCha20-Poly1305 + RSA-OAEP-SHA-256
 
 Usage:
   mcap-encrypt keygen  --out <basename>
@@ -22,14 +22,15 @@ Usage:
   mcap-encrypt decrypt --key <priv.pem> [--force] <input.mcap> <output.mcap>
 
 Commands:
-  keygen   Generate an RSA-2048 key pair.
+  keygen   Generate an RSA-4096 key pair.
            Writes <basename>.pub.pem and <basename>.priv.pem.
 
   encrypt  Encrypt an MCAP file. Each chunk is encrypted with XChaCha20-Poly1305.
            Repeat --key to encrypt for multiple recipients; any private key decrypts.
-           Chunks are processed in parallel using all available CPU cores.
+           Supports RSA-4096 and X25519 public keys (single-pass, streaming).
 
-  decrypt  Decrypt an encrypted MCAP file using the RSA private key.
+  decrypt  Decrypt an encrypted MCAP file using the private key.
+           Supports RSA and X25519 private keys.
            Outputs a standard, fully-indexed MCAP file.
 `
 
@@ -134,7 +135,7 @@ func runKeygen(args []string) {
 func runEncrypt(args []string) {
 	fs := flag.NewFlagSet("encrypt", flag.ExitOnError)
 	var keys stringList
-	fs.Var(&keys, "key", "path to RSA public key (.pub.pem); repeat for multiple recipients")
+	fs.Var(&keys, "key", "path to RSA-4096 or X25519 public key (.pub.pem); repeat for multiple recipients")
 	force := fs.Bool("force", false, "overwrite output file if it exists")
 	_ = fs.Parse(args)
 
@@ -176,7 +177,7 @@ func runEncrypt(args []string) {
 
 func runDecrypt(args []string) {
 	fs := flag.NewFlagSet("decrypt", flag.ExitOnError)
-	key := fs.String("key", "", "path to RSA private key (.priv.pem)")
+	key := fs.String("key", "", "path to RSA-4096 or X25519 private key (.priv.pem)")
 	force := fs.Bool("force", false, "overwrite output file if it exists")
 	_ = fs.Parse(args)
 

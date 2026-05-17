@@ -22,8 +22,12 @@ import {
   wrapSymmetricKey,
   spkiFingerprint,
   encodeWrappedKeyData,
+  computeManifestHMAC,
   ATTACHMENT_NAME,
   ATTACHMENT_MEDIA_TYPE,
+  MANIFEST_ATTACHMENT_NAME,
+  MANIFEST_ATTACHMENT_MEDIA_TYPE,
+  MANIFEST_PAYLOAD_SIZE,
 } from "./key.js";
 
 const KEY_SIZE = 32;
@@ -36,13 +40,13 @@ function randomBytes(n: number): Uint8Array {
 }
 
 // chunkAAD builds the AEAD additional data for one encrypted chunk.
-// It binds: file identity, chunk position, key identity, compression
+// It binds: file identity, chunk position, slot identity, compression
 // parameters, and time bounds. Any modification to these plaintext fields
 // or the ciphertext will cause authentication to fail.
 export function chunkAAD(
   fileId: Uint8Array,
   chunkIdx: bigint,
-  keyId: string,
+  slotId: string,
   compression: string,
   uncompressedSize: bigint,
   uncompressedCrc: number,
@@ -52,7 +56,7 @@ export function chunkAAD(
   const w = new BinaryWriter();
   w.writeBytes(fileId); // 16 bytes
   w.writeUint64(chunkIdx);
-  w.writeString(keyId); // 4-byte length prefix + bytes
+  w.writeString(slotId); // 4-byte length prefix + bytes
   w.writeString(compression);
   w.writeUint64(uncompressedSize);
   w.writeUint32(uncompressedCrc);
@@ -174,10 +178,10 @@ export async function encryptMcap(
             "Use the Go CLI (mcap-encrypt encrypt) to normalize LZ4 to zstd first.",
           );
         }
-        const keyId = "key-1";
+        const slotId = "key-1";
         const nonce = randomBytes(NONCE_SIZE);
         const aad = chunkAAD(
-          fileId, chunkIdx, keyId, chunk.compression,
+          fileId, chunkIdx, slotId, chunk.compression,
           chunk.uncompressedSize, chunk.uncompressedCrc,
           chunk.messageStartTime, chunk.messageEndTime,
         );
@@ -189,7 +193,7 @@ export async function encryptMcap(
           uncompressedSize: chunk.uncompressedSize,
           uncompressedCrc: chunk.uncompressedCrc,
           compression: chunk.compression,
-          keyId,
+          slotId,
           nonce,
           encryptedData: ciphertext,
         };
@@ -217,10 +221,17 @@ export async function encryptMcap(
         break;
       }
 
-      case OP_DATA_END:
+      case OP_DATA_END: {
         flushPending(); // flush in case there were no chunks
+        // Write manifest attachment with actual chunk count and HMAC.
+        const manifestMac = await computeManifestHMAC(symKey, chunkIdx, fileId);
+        const manifestPayload = new Uint8Array(MANIFEST_PAYLOAD_SIZE);
+        new DataView(manifestPayload.buffer).setBigUint64(0, chunkIdx, true);
+        manifestPayload.set(manifestMac, 8);
+        writeRecord(writer, OP_ATTACHMENT, encodeAttachment(now, 0n, MANIFEST_ATTACHMENT_NAME, MANIFEST_ATTACHMENT_MEDIA_TYPE, manifestPayload));
         writeRecord(writer, OP_DATA_END, data);
         break;
+      }
 
       case OP_FOOTER:
         writeRecord(writer, OP_FOOTER, new Uint8Array(20));

@@ -39,8 +39,8 @@ func WriteMagic(w io.Writer) error {
 // ReadRecord reads one MCAP record: opcode (1 byte) + length (uint64 LE) + data.
 // Returns io.EOF when there are no more records.
 func ReadRecord(r io.Reader) (opcode byte, data []byte, err error) {
-	hdr := make([]byte, 9)
-	if _, err = io.ReadFull(r, hdr); err != nil {
+	var hdr [9]byte
+	if _, err = io.ReadFull(r, hdr[:]); err != nil {
 		return
 	}
 	opcode = hdr[0]
