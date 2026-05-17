@@ -151,7 +151,7 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 - `FuzzDecodeWrappedKeyData`
 - `FuzzStreamDecrypt` (found INT-2025-001, INT-2025-002, INT-2025-003)
 
-### TypeScript: 21 unit tests
+### TypeScript: 22 unit tests
 
 Covers RSA-4096 and X25519 key wrapping, tamper detection, and format compatibility with the Go implementation.
 

@@ -7,6 +7,7 @@ import {
   type KeyPair,
 } from "../src/index.js";
 import { BinaryReader } from "../src/binary.js";
+import { decodeEncryptedChunk } from "../src/chunk.js";
 import {
   buildTestMcapWithAttachment,
   buildTestMcapWithMetadata,
@@ -133,6 +134,24 @@ describe("multi-chunk iterateMessages", () => {
   });
 });
 
+describe("nonce uniqueness", () => {
+  it("every EncryptedChunk has a distinct 24-byte nonce", async () => {
+    const { mcap: plain } = buildMultiChunkMcap(6, 5);
+    const enc = await encryptMcap(plain, keys.publicKeyPem);
+
+    const nonces = extractNonces(enc);
+    expect(nonces.length).toBeGreaterThanOrEqual(6);
+
+    const unique = new Set(nonces);
+    expect(unique.size).toBe(nonces.length);
+
+    // Each nonce is 24 bytes (XChaCha20-Poly1305), so 48 hex chars.
+    for (const n of nonces) {
+      expect(n).toHaveLength(48);
+    }
+  });
+});
+
 // --- scan helpers ---
 
 function readAttachmentNames(mcap: Uint8Array): string[] {
@@ -223,4 +242,20 @@ function readStatisticsMetadataCount(mcap: Uint8Array): number {
     pos += 9 + length;
   }
   throw new Error("no Statistics record found");
+}
+
+function extractNonces(enc: Uint8Array): string[] {
+  const view = new DataView(enc.buffer, enc.byteOffset);
+  const nonces: string[] = [];
+  let pos = 8; // skip magic
+  while (pos + 9 <= enc.length) {
+    const opcode = enc[pos]!;
+    const length = Number(view.getBigUint64(pos + 1, true));
+    if (opcode === 0x81) {
+      const chunk = decodeEncryptedChunk(enc.slice(pos + 9, pos + 9 + length));
+      nonces.push(Array.from(chunk.nonce).map((b) => b.toString(16).padStart(2, "0")).join(""));
+    }
+    pos += 9 + length;
+  }
+  return nonces;
 }
