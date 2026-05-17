@@ -55,18 +55,21 @@ adversarial unit tests. It has **not** been externally audited. Use accordingly.
 
 All tests run on every CI push (`go test -race -count=1 ./...`).
 
-### Go: 40 unit tests, 3 fuzz targets
+### Go: 45 unit tests, 3 fuzz targets
 
 **Round-trip:**
 - RSA-4096-OAEP-SHA-256 key wrapping and unwrapping
 - X25519-HKDF-XChaCha20Poly1305 key wrapping and unwrapping
 - Multiple recipients, mixed algorithms (one RSA, one X25519 in the same file)
 - RSA key rejected when attempting to decrypt an X25519-encrypted file
+- All recipients recover byte-identical plaintext (symmetric key consistency)
 
 **Adversarial:**
 - Ciphertext tamper (AEAD tag failure)
 - Nonce tamper (AEAD tag failure)
-- AAD tamper (AEAD tag failure)
+- AAD tamper: each field independently (message_start_time, message_end_time, uncompressed_size, uncompressed_crc, slot_id, compression)
+- Nonce uniqueness across all chunks in a file (nonce reuse detection)
+- FileID tamper in the wrapped-key attachment (caught by chunk AAD mismatch)
 - Wrong private key
 - Manifest HMAC forge detection
 - Manifest strip attack rejected under v3 (strip-attack prevention)
@@ -83,7 +86,7 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 **Edge cases:**
 - Empty MCAP input
 - Non-chunked MCAP input rejected
-- LZ4-compressed input rejected (unsupported compression)
+- LZ4-compressed input normalized to zstd (Go transparently re-compresses; TypeScript rejects LZ4 source)
 - Truncated file returns error, not panic
 - Output file not created on failure
 - Overwrite protection for both encrypt and decrypt
