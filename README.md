@@ -24,7 +24,7 @@ Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption 
 
 📌 *Status:* v0.x · experimental · not externally audited  
 ✅ *Best for:* MCAP logs at rest; full [Foxglove Studio](https://foxglove.dev/studio) visualization via bridge (same UX as a live robot); schemas + channels always readable  
-🚫 *Not for:* hiding topic names, timestamps, or attachments
+🚫 *Not for:* hiding topic names, timestamps, or schema/channel metadata
 
 ---
 
@@ -133,6 +133,7 @@ If the output file already exists, `encrypt` and `decrypt` fail with an error. P
 ### What is protected
 
 - Message payloads inside MCAP chunks.
+- Attachment data (the raw bytes of every user attachment).
 - Tampering with encrypted chunk ciphertext or the 16-byte Poly1305 authentication tag.
 - Tampering with AAD-covered plaintext fields: `file_id`, `chunk_index`, `slot_id`, `compression`, `uncompressed_size`, `uncompressed_crc`, `message_start_time`, and `message_end_time`. Any modification fails authentication.
 - Chunk swapping across files: `file_id` (a 16-byte random value, same for all recipients of a given file) is bound in the AAD.
@@ -150,7 +151,7 @@ The following remain in plaintext and are readable without a key:
 | Message start/end times per chunk | Preserved for timeline indexing |
 | Compression algorithm and approximate chunk size | Stored as plaintext encrypted-chunk metadata |
 | Ciphertext length | Chunks are not padded; approximate payload size is inferrable from ciphertext length |
-| Non-key attachments | Passed through unchanged |
+| Attachment name and media type | Plaintext for enumeration without a key; data is encrypted |
 | Metadata records | Passed through unchanged |
 | Recipient key fingerprints | Stored in wrapped-key attachments |
 
@@ -180,7 +181,7 @@ X25519 elliptic-curve Diffie-Hellman offers 128-bit security with 32-byte keys, 
 
 ### Test coverage
 
-The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, and manifest strip attacks. Three fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by automated interop tests (Go encrypts, TypeScript decrypts; TypeScript encrypts, Go decrypts) run on every CI push.
+The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by automated interop tests (Go encrypts, TypeScript decrypts; TypeScript encrypts, Go decrypts; both directions with attachments) run on every CI push.
 
 ### Audit status
 
@@ -575,13 +576,13 @@ See [FORMAT.md](FORMAT.md) for the complete binary specification.
 The outer file is a valid MCAP. Standard MCAP readers can open it and inspect schemas, channels, and the timeline. They will not find any messages because the `EncryptedChunk` opcode (`0x81`) is not a standard MCAP record type. The ChunkIndex records in the summary section point at these encrypted chunks, enabling time-range inspection without decryption.
 
 ```
-[magic] [Header] [Schema]* [Channel]* [WrappedKeyAttachment]+ [ManifestAttachment]
-[EncryptedChunk]* [DataEnd]
+[magic] [Header] [Schema]* [Channel]* [WrappedKeyAttachment]+
+[EncryptedChunk]* [EncryptedAttachment]* [ManifestAttachment] [DataEnd]
 [Schema]* [Channel]* [Statistics] [ChunkIndex]* [SummaryOffset]* [Footer]
 [magic]
 ```
 
-There is one `WrappedKeyAttachment` per recipient. All wrapped copies encode the same symmetric key, wrapped separately for each public key. The `ManifestAttachment` stores the chunk count and an HMAC-SHA-256 bound to the symmetric key and file identity, enabling truncation detection on decrypt. The summary section allows inspection of the recording timeline and topics without a key.
+There is one `WrappedKeyAttachment` per recipient. All wrapped copies encode the same symmetric key, wrapped separately for each public key. `EncryptedChunk` and `EncryptedAttachment` records are interleaved in source order. The `ManifestAttachment` stores the chunk count and an HMAC-SHA-256 bound to the symmetric key and file identity, enabling truncation detection on decrypt. The summary section allows inspection of the recording timeline and topics without a key.
 
 ### WrappedKeyAttachment
 
@@ -617,6 +618,19 @@ The `data` payload (all strings and byte fields use 4-byte LE length prefixes):
 | `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
 | `encrypted_data` | `bytes` | Ciphertext including the 16-byte Poly1305 tag (4-byte LE length prefix + N bytes) |
 
+### EncryptedAttachment (opcode `0x82`)
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Attachment name (plaintext) |
+| `media_type` | `string` | Media type (plaintext) |
+| `log_time` | `uint64 LE` | Log timestamp, nanoseconds (plaintext) |
+| `create_time` | `uint64 LE` | Creation timestamp, nanoseconds (plaintext) |
+| `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
+| `encrypted_data` | `bytes` | Ciphertext of the attachment data including the 16-byte Poly1305 tag |
+
+AAD binds `file_id`, `name`, `media_type`, `log_time`, and `create_time`. Altering any plaintext field or the ciphertext causes authentication to fail.
+
 All `WrappedKeyAttachment` records appear before the first `EncryptedChunk`. Decoders can begin streaming decryption in a single pass without buffering chunks.
 
 See [FORMAT.md](FORMAT.md) for the complete binary specification including AAD serialization and version history.
@@ -632,7 +646,7 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 | Limitation | Impact | Workaround |
 |---|---|---|
 | **No key rotation** | To change the key, re-encrypt the entire file. | Run `encrypt` with the new public key after decrypting with the old one. |
-| **Attachments are not encrypted** | Attachment content passes through in plaintext. | Encrypt sensitive attachments before writing to the MCAP. |
+| **Attachment metadata is plaintext** | Attachment name, media type, and timestamps are readable without a key. Data is encrypted. | If attachment names are sensitive, use opaque names before writing the MCAP. |
 | **Metadata records are not encrypted** | Arbitrary key-value metadata passes through in plaintext. | Strip or sanitize Metadata records before encrypting if they contain sensitive values. |
 | **Chunks are not padded** | Ciphertext length reveals approximate plaintext payload size. | Strip or normalize chunk sizes before encrypting if payload size is sensitive. |
 | **Input must be chunked** | Non-chunked MCAP files are rejected. | Re-encode with chunking enabled (the Foxglove CLI and most MCAP writers produce chunked output by default). |

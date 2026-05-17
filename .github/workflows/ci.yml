@@ -118,7 +118,7 @@ jobs:
 
       - name: Fuzz parser surface
         run: |
-          for t in FuzzDecodeEncryptedChunk FuzzDecodeWrappedKeyData FuzzStreamDecrypt; do
+          for t in FuzzDecodeEncryptedChunk FuzzDecodeEncryptedAttachment FuzzDecodeWrappedKeyData FuzzStreamDecrypt; do
             echo "== $t =="
             go test -run='^$' -fuzz="^${t}$" -fuzztime=30s ./pkg/mcapencrypt
           done
