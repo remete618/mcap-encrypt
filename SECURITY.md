@@ -32,5 +32,5 @@ Out of scope:
 
 ## Security status
 
-This library uses standard primitives (XChaCha20-Poly1305, RSA-2048-OAEP-SHA-256) and has
+This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256, X25519-HKDF-XChaCha20Poly1305) and has
 adversarial unit tests. It has **not** been externally audited. Use accordingly.
