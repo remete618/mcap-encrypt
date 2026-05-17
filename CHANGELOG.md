@@ -41,7 +41,7 @@ All notable changes to this project are documented here.
 - LZ4-compressed chunks transparently re-compressed as zstd on encrypt (JS-compatible). TypeScript rejects LZ4 source files.
 - Encrypted output no longer carries the source MCAP index; decrypted output is fully re-indexed.
 
-### Tests (Go: 72 unit tests, 4 fuzz targets; TypeScript: 69; interop: 6)
+### Tests (Go: 72 unit tests, 4 fuzz targets; TypeScript: 69; interop: 8)
 - Nonce uniqueness across all chunks in a file.
 - All AAD fields independently tampered (message_start_time, message_end_time, uncompressed_size, uncompressed_crc, slot_id, compression).
 - FileID tampered in the wrapped-key attachment (caught by chunk AAD mismatch).
@@ -60,6 +60,7 @@ All notable changes to this project are documented here.
 - TypeScript AAD parity: 8 `chunkAAD()` unit tests prove each field (fileId, chunkIdx, slotId, compression, uncompressedSize, uncompressedCrc, startTime, endTime) produces distinct AAD bytes. 6 end-to-end tamper tests prove each mutable field causes AEAD rejection. fileId tamper and chunk reordering tests complete parity with the Go adversarial suite.
 - TypeScript X25519: 13 unit tests (KDF vector, wrap/unwrap round-trip, wrong key rejection, RSA key type mismatch, key generation, full encrypt/decrypt round-trip, multi-recipient RSA+X25519). HKDF test vector matches the Go reference vector exactly.
 - Interop X25519: 2 new tests (Go encrypts X25519 → TS decrypts; TS encrypts X25519 → Go decrypts). Go CLI reads TS-generated PKCS8/SPKI PEM files directly.
+- Interop rotation: 2 new tests (Go rotates → TS decrypts; TS rotates → Go decrypts). Completes rotation parity with the encrypt/decrypt interop suite.
 - Key rotation: round-trip (encrypt A → rotate to B → decrypt B), old key rejected after rotation, multi-recipient rotation (B and C both decrypt, identical messages), non-encrypted input rejected, `RotateKeyFile` leaves no temp file on failure. TypeScript mirrors all Go cases plus X25519 rotation round-trip.
 - Warn callback: fires on malformed wrapped-key attachment slot (two-recipient file, first slot corrupted, second slot still decrypts cleanly); stays silent on a well-formed decrypt. Go and TypeScript both covered.
 

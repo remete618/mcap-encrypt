@@ -175,7 +175,7 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 
 Covers RSA-4096 and X25519 key wrapping, KDF test vector (HKDF-SHA-256 output anchored against the Go reference), full AAD field tamper parity with Go (chunkAAD unit tests + end-to-end splice tests for all mutable fields + fileId tamper + chunk reordering), encrypted attachment round-trip and tamper rejection, key rotation (round-trip, old key rejected, multi-recipient, non-encrypted rejection, X25519 rotation), warn callback (fires on malformed slot, silent on clean decrypt), and format compatibility with the Go implementation.
 
-### Cross-language interop: 6 tests
+### Cross-language interop: 8 tests
 
 - Go encrypts (RSA), TypeScript decrypts (messages).
 - TypeScript encrypts (RSA), Go decrypts (messages).
@@ -183,6 +183,8 @@ Covers RSA-4096 and X25519 key wrapping, KDF test vector (HKDF-SHA-256 output an
 - TypeScript encrypts with attachment (RSA), Go decrypts (attachment data verified).
 - Go encrypts (X25519), TypeScript decrypts (messages).
 - TypeScript encrypts (X25519), Go decrypts (messages).
+- Go rotates keys, TypeScript decrypts with new key.
+- TypeScript rotates keys, Go decrypts with new key.
 
 Run as a dedicated CI job on every push.
 
