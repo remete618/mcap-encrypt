@@ -196,7 +196,7 @@ X25519 elliptic-curve Diffie-Hellman offers 128-bit security with 32-byte keys, 
 
 ### Test coverage
 
-The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 6 automated interop tests (RSA and X25519 in both directions, with and without attachments) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation. Key rotation is covered by round-trip, multi-recipient, wrong-key rejection, and atomic-write tests in both Go and TypeScript. The warn callback is verified to fire on malformed key attachment slots and to stay silent on clean decrypts. Current count: **85+ Go unit tests**, **80 TypeScript unit tests**, **33 Python tests** (29 unit + 4 interop), 4 fuzz targets, **8 Go/TypeScript interop tests**.
+The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 8 automated interop tests (RSA and X25519 in both directions, with and without attachments, plus key rotation) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation. Key rotation is covered by round-trip, multi-recipient, wrong-key rejection, and atomic-write tests in both Go and TypeScript. The warn callback is verified to fire on malformed key attachment slots and to stay silent on clean decrypts. Current count: **85+ Go unit tests**, **80 TypeScript unit tests**, **37 Python tests** (33 unit + 4 interop), 4 fuzz targets, **8 Go/TypeScript interop tests**.
 
 ### Audit status
 
@@ -312,7 +312,7 @@ For X25519 key pairs, use `GenerateX25519KeyPair` in the Go library directly.
 
 ### encrypt
 
-Encrypts a standard MCAP file. Input must be a chunked MCAP (non-chunked files are rejected with a clear error). Validates magic bytes before starting. Single-pass, streaming. Writes an unencrypted ChunkIndex in the summary section so MCAP readers can navigate by time range without decrypting.
+Encrypts a standard MCAP file. Input must be a chunked MCAP (non-chunked files are rejected with a clear error). Validates magic bytes before starting. Writes an unencrypted ChunkIndex in the summary section so MCAP readers can navigate by time range without decrypting.
 
 | Flag | Description |
 |---|---|
@@ -865,7 +865,7 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 | **Metadata records are plaintext by default** | Arbitrary key-value metadata passes through in plaintext unless `--metadata encrypt` or `--metadata encrypt-all` is used. | Use `--metadata encrypt` to encrypt the map while keeping the name readable, or `--metadata encrypt-all` to encrypt both name and map (Go, TypeScript, Python). |
 | **Chunks are not padded** | Ciphertext length reveals approximate plaintext payload size. | Strip or normalize chunk sizes before encrypting if payload size is sensitive. |
 | **Input must be chunked** | Non-chunked MCAP files are rejected. | Re-encode with chunking enabled (the Foxglove CLI and most MCAP writers produce chunked output by default). |
-| **Streaming encrypt: schemas/channels must precede first chunk** | Single-pass `EncryptStream` collects Schema and Channel records as top-level records before the first chunk. Files where schemas/channels appear only inside chunk data (non-standard) must use the file-based `Encrypt`/`EncryptMulti` instead. | Use `mcap-encrypt encrypt` CLI or `EncryptMulti` for non-standard MCAP files. |
+| **EncryptStream spools input to disk** | `EncryptStream` copies the input to a temporary file and makes two passes: pass 1 collects Schema/Channel; pass 2 encrypts chunk by chunk. Peak RAM is O(1 chunk), but disk space proportional to the input is required. | Use the file-based `Encrypt`/`EncryptMulti` if disk overhead is not acceptable. |
 | **Bridge loads everything into memory** | Large files require sufficient RAM. | Use `decrypt` to produce a standard file, then open it in Foxglove Studio directly. |
 
 ### TypeScript-specific limitations
