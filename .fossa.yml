@@ -1,0 +1,14 @@
+version: 3
+
+# Scope FOSSA to Go and TypeScript only.
+# Python (py/) is excluded: pynacl and zstandard trigger false-positive GPL
+# findings from autoconf/libtool build scripts bundled inside libsodium and
+# zstd source distributions. The runtime licenses are Apache-2.0 / ISC / BSD-3-Clause.
+# Re-enable when the Python package is published to PyPI.
+
+targets:
+  only:
+    - type: gomod
+      path: .
+    - type: npm
+      path: ts
