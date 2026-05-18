@@ -24,7 +24,7 @@ Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption 
 
 📌 *Status:* v0.x · experimental · not externally audited  
 ✅ *Best for:* MCAP logs at rest; full [Foxglove Studio](https://foxglove.dev/studio) visualization via bridge (same UX as a live robot); schemas + channels always readable  
-🚫 *Not for:* hiding topic names, timestamps, or schema/channel metadata
+🚫 *Not for:* hiding topic names, timestamps, or schema/channel definitions (those stay readable by design)
 
 ---
 
@@ -81,6 +81,18 @@ MCAP is the standard container format for robotics sensor data. Files can contai
 </tr>
 </table>
 
+### Encryption levels
+
+Three levels of protection, each a superset of the previous:
+
+| Level | CLI flag | What is encrypted | Readable without a key |
+|---|---|---|---|
+| **Data only** | *(default)* | Chunk payloads (sensor data, camera frames, lidar) | Schemas, channels, topic names, timestamps, Metadata records |
+| **Data + metadata map** | `--metadata encrypt` | Chunk payloads + Metadata key-value pairs | Schemas, channels, topic names, timestamps, Metadata record names |
+| **Data + full metadata** | `--metadata encrypt-all` | Chunk payloads + Metadata names + Metadata key-value pairs | Schemas, channels, topic names, timestamps only |
+
+Schemas and channel names are always readable; that is intentional — they let MCAP tooling index and navigate the file without a key. If you need to hide topic names or schema definitions, `mcap-encrypt` is not the right tool.
+
 ```mermaid
 flowchart LR
     A[MCAP Chunk] --> B[XChaCha20-Poly1305]
@@ -91,7 +103,8 @@ flowchart LR
     E1 --> F[WrappedKey attachments, plaintext]
     E2 --> F
     B --> I[ChunkIndex in summary, plaintext time ranges]
-    G[Schemas / Channels / Metadata] --> H[Plaintext, inspectable without key]
+    G[Schemas / Channels] --> H[Always plaintext, inspectable without key]
+    M[Metadata records] --> N[Plaintext by default; optionally encrypted with --metadata flag]
 ```
 
 ---
