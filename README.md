@@ -816,7 +816,7 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 
 | Limitation | Impact | Workaround |
 |---|---|---|
-| **No key rotation** | To change the key, re-encrypt the entire file. | Run `encrypt` with the new public key after decrypting with the old one. |
+| **No DEK rotation** | `rotate` changes which recipients can decrypt (re-wraps the same symmetric key) but does not generate a new data-encryption key. To replace the DEK itself, decrypt and re-encrypt with a new key. | `mcap-encrypt decrypt --key old.priv.pem enc.mcap plain.mcap && mcap-encrypt encrypt --key new.pub.pem plain.mcap enc2.mcap` |
 | **Attachment metadata is plaintext** | Attachment name, media type, and timestamps are readable without a key. Data is encrypted. | If attachment names are sensitive, use opaque names before writing the MCAP. |
 | **Metadata records are not encrypted** | Arbitrary key-value metadata passes through in plaintext. | Strip or sanitize Metadata records before encrypting if they contain sensitive values. |
 | **Chunks are not padded** | Ciphertext length reveals approximate plaintext payload size. | Strip or normalize chunk sizes before encrypting if payload size is sensitive. |
