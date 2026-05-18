@@ -4,3 +4,7 @@
 *.pem
 ts/dist/
 ts/node_modules/
+py/**/__pycache__/
+py/**/*.pyc
+py/.venv*/
+py/.pytest_cache/
