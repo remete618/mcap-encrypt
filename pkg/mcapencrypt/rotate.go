@@ -247,10 +247,10 @@ doneScanning:
 			return fmt.Errorf("wrap key for new recipient %d: %w", i+1, wrapErr)
 		}
 		wkd := &WrappedKeyData{
-			FileID:    fileID,
-			KeyID:     fingerprint,
-			Algorithm: "xchacha20poly1305",
-			KEKAlg:    kekAlg,
+			FileID:     fileID,
+			KeyID:      fingerprint,
+			Algorithm:  "xchacha20poly1305",
+			KEKAlg:     kekAlg,
 			WrappedKey: wrapped,
 		}
 		attBytes := buildAttachmentBytes(now, 0, AttachmentName, AttachmentMediaType, wkd.Encode())
