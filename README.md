@@ -334,7 +334,7 @@ While running, the CLI shows the same live progress bar as encrypt. Press **Ctrl
 
 ### rotate
 
-Changes the recipient keys of an encrypted MCAP without decrypting any chunk data. The symmetric key is unwrapped with the old private key and re-wrapped for each new public key. All `EncryptedChunk` and `EncryptedAttachment` records are copied verbatim. O(file size) I/O with zero message decryption.
+Changes the recipient keys of an encrypted MCAP without decrypting any chunk data. The symmetric key is unwrapped with the old private key and re-wrapped for each new public key. All `EncryptedChunk` and `EncryptedAttachment` records are copied verbatim. O(file size) I/O with zero message decryption. The data-encryption key (DEK) itself does not change; to replace the DEK, decrypt and re-encrypt with a new key (see Known limitations).
 
 ```bash
 mcap-encrypt rotate --old-key old.priv.pem --new-key new.pub.pem encrypted.mcap rotated.mcap
