@@ -379,6 +379,12 @@ scan:
 				return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, openErr)
 			}
 			chunkIdx++
+			// Skip chunks that claim to carry no data — AEAD has already
+			// authenticated the zero UncompressedSize, so this is legitimate
+			// and avoids a no-op decompression call.
+			if ec.UncompressedSize == 0 {
+				continue
+			}
 			if parseErr := writeChunkMessages(plaintext, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC, writer); parseErr != nil {
 				return fmt.Errorf("parse decrypted chunk: %w", parseErr)
 			}

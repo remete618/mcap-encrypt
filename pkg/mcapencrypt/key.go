@@ -258,6 +258,25 @@ func LoadPublicKeyAny(path string) (any, error) {
 	}
 }
 
+// ParsePublicKeyPEM parses an RSA or X25519 public key from a PEM-encoded string.
+// Use this when the key is already in memory; use LoadPublicKeyAny when it is on disk.
+func ParsePublicKeyPEM(pemStr string) (any, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in provided key string")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	switch pub.(type) {
+	case *rsa.PublicKey, *ecdh.PublicKey:
+		return pub, nil
+	default:
+		return nil, fmt.Errorf("unsupported public key type %T", pub)
+	}
+}
+
 // LoadPrivateKey loads an RSA private key from a PEM file.
 // Kept for backwards compatibility; new code should use LoadPrivateKeyAny.
 func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {

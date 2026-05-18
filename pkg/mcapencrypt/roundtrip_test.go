@@ -2,6 +2,7 @@ package mcapencrypt_test
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -172,4 +173,139 @@ func TestEncryptedFileIsNotReadableAsStandardMCAP(t *testing.T) {
 	}
 	// A standard reader must not be able to read any messages from an encrypted file.
 	require.Equal(t, 0, msgCount, "standard reader must not expose encrypted messages")
+}
+
+// TestEncryptStreamRoundTrip verifies that EncryptStream produces an encrypted
+// MCAP that can be decrypted back to the original messages. Uses X25519 keys
+// so the test runs fast without RSA key generation overhead.
+func TestEncryptStreamRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	decPath := filepath.Join(dir, "decrypted.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateX25519KeyPair(keyBase))
+
+	pubPEM, err := os.ReadFile(keyBase + ".pub.pem")
+	require.NoError(t, err)
+	plainBytes, err := os.ReadFile(plainPath)
+	require.NoError(t, err)
+
+	// Encrypt via stream API.
+	var encBuf bytes.Buffer
+	require.NoError(t, mcapencrypt.EncryptStream(bytes.NewReader(plainBytes), &encBuf, []string{string(pubPEM)}))
+	require.Greater(t, encBuf.Len(), 0)
+
+	// Write encrypted bytes to a file for decryption.
+	encPath := filepath.Join(dir, "encrypted.mcap")
+	require.NoError(t, os.WriteFile(encPath, encBuf.Bytes(), 0644))
+
+	// Decrypt and compare messages.
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyBase+".priv.pem"))
+	origMsgs := readAllMessages(t, plainPath)
+	decMsgs := readAllMessages(t, decPath)
+	require.Equal(t, len(origMsgs), len(decMsgs), "message count must match")
+	for i, om := range origMsgs {
+		dm := decMsgs[i]
+		require.Equal(t, om.ChannelID, dm.ChannelID)
+		require.Equal(t, om.LogTime, dm.LogTime)
+		require.Equal(t, om.Data, dm.Data)
+	}
+}
+
+// TestEncryptStreamMultiRecipient verifies that when EncryptStream is called
+// with two public keys, the encrypted file can be decrypted by either key.
+func TestEncryptStreamMultiRecipient(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	keyA := filepath.Join(dir, "keyA")
+	keyB := filepath.Join(dir, "keyB")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateX25519KeyPair(keyA))
+	require.NoError(t, mcapencrypt.GenerateX25519KeyPair(keyB))
+
+	pubA, err := os.ReadFile(keyA + ".pub.pem")
+	require.NoError(t, err)
+	pubB, err := os.ReadFile(keyB + ".pub.pem")
+	require.NoError(t, err)
+	plainBytes, err := os.ReadFile(plainPath)
+	require.NoError(t, err)
+
+	var encBuf bytes.Buffer
+	require.NoError(t, mcapencrypt.EncryptStream(bytes.NewReader(plainBytes), &encBuf, []string{string(pubA), string(pubB)}))
+
+	encPath := filepath.Join(dir, "encrypted.mcap")
+	require.NoError(t, os.WriteFile(encPath, encBuf.Bytes(), 0644))
+
+	origMsgs := readAllMessages(t, plainPath)
+
+	for _, keyFile := range []string{keyA, keyB} {
+		decPath := keyFile + ".dec.mcap"
+		require.NoError(t, mcapencrypt.Decrypt(encPath, decPath, keyFile+".priv.pem"),
+			"decryption with %s must succeed", filepath.Base(keyFile))
+		decMsgs := readAllMessages(t, decPath)
+		require.Equal(t, len(origMsgs), len(decMsgs))
+	}
+}
+
+// TestEncryptStreamWrongKeyFails verifies that a file encrypted via EncryptStream
+// cannot be decrypted with a different key.
+func TestEncryptStreamWrongKeyFails(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	keyA := filepath.Join(dir, "keyA")
+	keyB := filepath.Join(dir, "keyB")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateX25519KeyPair(keyA))
+	require.NoError(t, mcapencrypt.GenerateX25519KeyPair(keyB))
+
+	pubA, err := os.ReadFile(keyA + ".pub.pem")
+	require.NoError(t, err)
+	plainBytes, err := os.ReadFile(plainPath)
+	require.NoError(t, err)
+
+	var encBuf bytes.Buffer
+	require.NoError(t, mcapencrypt.EncryptStream(bytes.NewReader(plainBytes), &encBuf, []string{string(pubA)}))
+
+	encPath := filepath.Join(dir, "encrypted.mcap")
+	require.NoError(t, os.WriteFile(encPath, encBuf.Bytes(), 0644))
+
+	decPath := filepath.Join(dir, "decrypted.mcap")
+	err = mcapencrypt.Decrypt(encPath, decPath, keyB+".priv.pem")
+	require.Error(t, err, "decryption with wrong key must fail")
+}
+
+// TestEncryptStreamRejectsAlreadyEncrypted verifies that feeding an already-encrypted
+// MCAP to EncryptStream returns an error and produces no output.
+func TestEncryptStreamRejectsAlreadyEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "encrypted.mcap")
+	keyBase := filepath.Join(dir, "key")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateX25519KeyPair(keyBase))
+
+	pubPEM, err := os.ReadFile(keyBase + ".pub.pem")
+	require.NoError(t, err)
+	require.NoError(t, mcapencrypt.Encrypt(plainPath, encPath, keyBase+".pub.pem"))
+
+	encBytes, err := os.ReadFile(encPath)
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	err = mcapencrypt.EncryptStream(bytes.NewReader(encBytes), &out, []string{string(pubPEM)})
+	require.Error(t, err, "re-encrypting an already-encrypted file must fail")
+	require.ErrorContains(t, err, "already encrypted")
+}
+
+// TestEncryptStreamRequiresAtLeastOneKey verifies that calling EncryptStream
+// with an empty key list returns an error immediately, before any I/O.
+func TestEncryptStreamRequiresAtLeastOneKey(t *testing.T) {
+	err := mcapencrypt.EncryptStream(bytes.NewReader(nil), io.Discard, []string{})
+	require.Error(t, err)
+	require.ErrorContains(t, err, "at least one public key")
 }

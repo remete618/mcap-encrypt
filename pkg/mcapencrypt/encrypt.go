@@ -550,6 +550,75 @@ outer:
 	return os.Rename(tmpPath, outputPath)
 }
 
+// EncryptStream encrypts the MCAP data in r and writes the encrypted result to w.
+// pubKeyPems contains one or more PEM-encoded RSA or X25519 public keys; any of
+// the corresponding private keys can decrypt the result.
+//
+// Because encryption requires two sequential passes over the input (schema/channel
+// scan then encrypt) and a seekable output (manifest patch-back), r is buffered
+// to a temporary file before encryption begins. For large streams this means the
+// complete input is written to disk before any encrypted output is produced.
+//
+// The optional progress callback receives the cumulative bytes written to the
+// encrypted output after each chunk, matching the behaviour of EncryptMulti.
+func EncryptStream(r io.Reader, w io.Writer, pubKeyPems []string, progress ...func(int64)) (retErr error) {
+	if len(pubKeyPems) == 0 {
+		return fmt.Errorf("at least one public key is required")
+	}
+
+	// Write public-key PEMs to a per-call temp directory so the path-based
+	// EncryptMulti can load them. Public keys are not secret.
+	keyDir, err := os.MkdirTemp("", ".mcap-encrypt-stream-keys-*")
+	if err != nil {
+		return fmt.Errorf("create key temp dir: %w", err)
+	}
+	defer os.RemoveAll(keyDir)
+
+	keyPaths := make([]string, len(pubKeyPems))
+	for i, pemStr := range pubKeyPems {
+		kp := filepath.Join(keyDir, fmt.Sprintf("key%d.pub.pem", i))
+		if err := os.WriteFile(kp, []byte(pemStr), 0644); err != nil {
+			return fmt.Errorf("write key %d to temp: %w", i+1, err)
+		}
+		keyPaths[i] = kp
+	}
+
+	// Buffer r into a temp file; two-pass encryption requires seekable input.
+	tmpIn, err := os.CreateTemp("", ".mcap-encrypt-stream-in-*")
+	if err != nil {
+		return fmt.Errorf("create temp input: %w", err)
+	}
+	tmpInPath := tmpIn.Name()
+	defer os.Remove(tmpInPath)
+
+	if _, err := io.Copy(tmpIn, r); err != nil {
+		tmpIn.Close()
+		return fmt.Errorf("buffer input: %w", err)
+	}
+	if err := tmpIn.Close(); err != nil {
+		return fmt.Errorf("flush temp input: %w", err)
+	}
+
+	// EncryptMulti checks that the output path does not exist before creating it.
+	tmpOutPath := tmpInPath + ".enc"
+	defer os.Remove(tmpOutPath)
+
+	if err := EncryptMulti(tmpInPath, tmpOutPath, keyPaths, progress...); err != nil {
+		return err
+	}
+
+	tmpOut, err := os.Open(tmpOutPath)
+	if err != nil {
+		return fmt.Errorf("open temp output: %w", err)
+	}
+	defer tmpOut.Close()
+
+	if _, err := io.Copy(w, tmpOut); err != nil {
+		return fmt.Errorf("copy output: %w", err)
+	}
+	return nil
+}
+
 // passthroughOpcode maps token types that are written verbatim to their opcodes.
 var passthroughOpcode = map[mcap.TokenType]byte{
 	mcap.TokenHeader:   0x01,
