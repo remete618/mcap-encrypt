@@ -31,15 +31,22 @@ see only schemas, channels, and the key attachments in plaintext.
 <EncryptedChunk records>             opcode 0x81  — one per original chunk
 <EncryptedAttachment records>        opcode 0x82  — one per user attachment (interleaved with chunks)
 <EncryptedMetadata records>          opcode 0x83  — one per Metadata record (only when metadata mode != plaintext)
-<Manifest Attachment record>         opcode 0x09  — exactly one, written just before DataEnd
+<Manifest Attachment record>         opcode 0x09  — exactly one (position depends on write mode; see below)
 <DataEnd record>                     opcode 0x0F
 <Summary section>                    — schemas, channels, Statistics, ChunkIndex records
 <Footer record>                      opcode 0x02  — summary_start points to summary section
 <magic>                              8 bytes
 ```
 
-All wrapped-key and manifest attachments appear **before** the first `EncryptedChunk`
+All wrapped-key attachments appear **before** the first `EncryptedChunk`
 so a decoder can stream-decrypt in a single pass.
+
+**Manifest attachment position** depends on the write mode:
+
+- **Standard (two-pass) mode** — `Encrypt` / `EncryptMulti`: the manifest attachment appears before the first `EncryptedChunk`. The chunk count and HMAC are patched in-place after all chunks are written using `WriteAt` on the seekable output file.
+- **Streaming mode** — `EncryptStream` / `EncryptStreamWithOptions`: the manifest attachment appears after `DataEnd` (but before the summary section). The real chunk count and HMAC are known only after the full input is consumed, so no patch-back is needed.
+
+Decoders scan records until `opcodeFooter` and are not stopped by `DataEnd`, so both positions are found correctly without any changes to the decoder.
 
 The summary section allows seekable access by time range without decryption. Each
 `ChunkIndex` record (opcode `0x08`) points to an `EncryptedChunk` record at
@@ -220,6 +227,8 @@ During decryption:
 1. Compute `expected_hmac = HMAC-SHA-256(sym_key, stored_chunk_count_le8 || file_id)`.
 2. Verify `expected_hmac == stored_hmac` in constant time. Failure means the manifest was tampered.
 3. Verify `stored_chunk_count == actual_chunks_decrypted`. Mismatch means the file was truncated or padded.
+
+In **standard (two-pass) mode** the manifest appears before the first `EncryptedChunk`. In **streaming mode** it appears after `DataEnd`. Decoders scan all records until `opcodeFooter` and find the manifest regardless of position.
 
 Files with `WrappedKeyData.version == 2` (legacy) may not have this attachment; decoders skip manifest verification for those files only. Files with `version == 3` must have this attachment; decryption fails without it to prevent manifest strip attacks.
 

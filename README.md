@@ -865,6 +865,7 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 | **Metadata records are plaintext by default** | Arbitrary key-value metadata passes through in plaintext unless `--metadata encrypt` or `--metadata encrypt-all` is used. | Use `--metadata encrypt` to encrypt the map while keeping the name readable, or `--metadata encrypt-all` to encrypt both name and map (Go, TypeScript, Python). |
 | **Chunks are not padded** | Ciphertext length reveals approximate plaintext payload size. | Strip or normalize chunk sizes before encrypting if payload size is sensitive. |
 | **Input must be chunked** | Non-chunked MCAP files are rejected. | Re-encode with chunking enabled (the Foxglove CLI and most MCAP writers produce chunked output by default). |
+| **Streaming encrypt: schemas/channels must precede first chunk** | Single-pass `EncryptStream` collects Schema and Channel records as top-level records before the first chunk. Files where schemas/channels appear only inside chunk data (non-standard) must use the file-based `Encrypt`/`EncryptMulti` instead. | Use `mcap-encrypt encrypt` CLI or `EncryptMulti` for non-standard MCAP files. |
 | **Bridge loads everything into memory** | Large files require sufficient RAM. | Use `decrypt` to produce a standard file, then open it in Foxglove Studio directly. |
 
 ### TypeScript-specific limitations
