@@ -2,11 +2,13 @@
 
 ## Prerequisites
 
-| Tool | Version |
-|------|---------|
-| Go   | 1.26+   |
-| Node | 20+     |
-| npm  | 10+     |
+| Tool   | Version |
+|--------|---------|
+| Go     | 1.26+   |
+| Node   | 20+     |
+| npm    | 10+     |
+| Python | 3.10+   |
+| uv     | 0.4+    |
 
 ## Build
 
@@ -30,6 +32,9 @@ go test ./pkg/mcapencrypt/... -run='^$' -bench=. -benchmem -benchtime=3x
 # TypeScript unit tests
 cd ts && npm test
 
+# Python library tests (requires uv)
+cd py && uv sync --extra dev && uv run python -m pytest
+
 # Cross-language interop tests (requires Go binary in PATH)
 cd ts && npm run test:interop
 ```
@@ -44,7 +49,8 @@ cd ts && npm run test:interop
 
 - [ ] `go test -race ./...` passes locally
 - [ ] `cd ts && npm run typecheck && npm test` passes locally
-- [ ] New behavior has a test (Go and/or TypeScript as appropriate)
+- [ ] `cd py && uv sync --extra dev && uv run python -m pytest` passes locally
+- [ ] New behavior has a test (Go, TypeScript, and/or Python as appropriate)
 - [ ] No secrets, PEM keys, or `.env` files committed
 - [ ] PR targets `main`; branch name is `your-github-username/short-description`
 

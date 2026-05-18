@@ -135,7 +135,7 @@ If the output file already exists, `encrypt` and `decrypt` fail with an error. P
 
 **Threat model:** `mcap-encrypt` assumes an adversary with full read access to encrypted files but without the recipient's private key. It does not protect against an adversary with access to process memory, the decryption machine, or the private key files.
 
-`mcap-encrypt` encrypts MCAP chunk payloads. It does not encrypt the outer MCAP structure.
+`mcap-encrypt` encrypts MCAP chunk payloads, user attachment data, and optionally Metadata records. It does not encrypt the outer MCAP structure (schemas, channel names, timestamps).
 
 | Layer | Algorithm | Purpose |
 |---|---|---|
@@ -167,7 +167,7 @@ The following remain in plaintext and are readable without a key:
 | Compression algorithm and approximate chunk size | Stored as plaintext encrypted-chunk metadata |
 | Ciphertext length | Chunks are not padded; approximate payload size is inferrable from ciphertext length |
 | Attachment name and media type | Plaintext for enumeration without a key; data is encrypted |
-| Metadata records | Passed through unchanged |
+| Metadata records | Plaintext by default; use `--metadata encrypt` or `--metadata encrypt-all` to protect them |
 | Recipient key fingerprints | Stored in wrapped-key attachments |
 
 If any of these fields are sensitive, strip or transform them before encryption, or use full-file encryption instead.
@@ -196,7 +196,7 @@ X25519 elliptic-curve Diffie-Hellman offers 128-bit security with 32-byte keys, 
 
 ### Test coverage
 
-The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 6 automated interop tests (RSA and X25519 in both directions, with and without attachments) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation. Key rotation is covered by round-trip, multi-recipient, wrong-key rejection, and atomic-write tests in both Go and TypeScript. The warn callback is verified to fire on malformed key attachment slots and to stay silent on clean decrypts. Current count: **78 Go unit tests**, **69 TypeScript unit tests**, **31 Python tests** (27 unit + 4 interop), 4 fuzz targets, **8 Go/TypeScript interop tests**.
+The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 6 automated interop tests (RSA and X25519 in both directions, with and without attachments) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation. Key rotation is covered by round-trip, multi-recipient, wrong-key rejection, and atomic-write tests in both Go and TypeScript. The warn callback is verified to fire on malformed key attachment slots and to stay silent on clean decrypts. Current count: **85+ Go unit tests**, **80 TypeScript unit tests**, **33 Python tests** (29 unit + 4 interop), 4 fuzz targets, **8 Go/TypeScript interop tests**.
 
 ### Audit status
 
@@ -779,7 +779,7 @@ The outer file is a valid MCAP. Standard MCAP readers can open it and inspect sc
 
 ```
 [magic] [Header] [Schema]* [Channel]* [WrappedKeyAttachment]+
-[EncryptedChunk]* [EncryptedAttachment]* [ManifestAttachment] [DataEnd]
+[EncryptedChunk]* [EncryptedAttachment]* [EncryptedMetadata]* [ManifestAttachment] [DataEnd]
 [Schema]* [Channel]* [Statistics] [ChunkIndex]* [SummaryOffset]* [Footer]
 [magic]
 ```
@@ -832,6 +832,19 @@ The `data` payload (all strings and byte fields use 4-byte LE length prefixes):
 | `encrypted_data` | `bytes` | Ciphertext of the attachment data including the 16-byte Poly1305 tag |
 
 AAD binds `file_id`, `name`, `media_type`, `log_time`, and `create_time`. Altering any plaintext field or the ciphertext causes authentication to fail.
+
+### EncryptedMetadata (opcode `0x83`)
+
+Only present when `--metadata encrypt` or `--metadata encrypt-all` is passed. In the default `plaintext` mode, standard `Metadata` records pass through unchanged and no `0x83` records are written.
+
+| Field | Type | Description |
+|---|---|---|
+| `flags` | `uint8` | `0x00` = encrypt map only (name stored plaintext); `0x01` = encrypt everything (name + map) |
+| `name` | `string` | Record name (plaintext when `flags=0x00`; empty string when `flags=0x01`) |
+| `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
+| `encrypted_data` | `bytes` | Ciphertext including the 16-byte Poly1305 tag (4-byte LE length prefix + N bytes) |
+
+AAD for `flags=0x00` binds `file_id + name`. AAD for `flags=0x01` binds `file_id` only (the name is inside the ciphertext). Standard MCAP readers that do not know opcode `0x83` skip these records gracefully.
 
 All `WrappedKeyAttachment` records appear before the first `EncryptedChunk`. Decoders can begin streaming decryption in a single pass without buffering chunks.
 

@@ -43,11 +43,14 @@ The attacker has full read access to the encrypted file and knows all algorithms
 The MCAP summary section (ChunkIndex, Statistics, SummaryOffset) is plaintext and unauthenticated. This is intentional: it allows seekable access and time-range queries without the private key. The authenticated ground truth is the EncryptedChunk stream, not the summary.
 
 **FileID:**
-Every encrypted file carries a random 16-byte FileID embedded in each wrapped-key attachment and bound into the AAD of every EncryptedChunk and every EncryptedAttachment. Transplanting records from one file to another causes authentication to fail, because the fileID will not match.
+Every encrypted file carries a random 16-byte FileID embedded in each wrapped-key attachment and bound into the AAD of every EncryptedChunk, every EncryptedAttachment, and every EncryptedMetadata record. Transplanting records from one file to another causes authentication to fail, because the fileID will not match.
 
 **Format versions:**
 - Version 2 (legacy): manifest attachment is optional on decryption.
-- Version 3 (current default): manifest is required. Decrypting a v3 file without the manifest attachment returns an error. All files written by this library use version 3.
+- Version 3: manifest is required. Decrypting a v3 file without the manifest attachment returns an error.
+- Version 4: seekable summary section added after DataEnd (Schema, Channel, Statistics, ChunkIndex, SummaryOffset). Enables O(log n) time-range seeking without decryption.
+- Version 5: EncryptedAttachment record (opcode 0x82) added. User attachment data is encrypted.
+- Version 6 (current): EncryptedMetadata record (opcode 0x83) added. Metadata records are optionally encrypted. Default mode is wire-compatible with version 5.
 
 **Out of scope:**
 - Side-channel and timing attacks. No constant-time guarantees beyond what Go's `crypto/rsa` and `crypto/ecdh` packages provide.
@@ -107,7 +110,7 @@ This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256
 
 All tests run on every CI push (`go test -race -count=1 ./...`).
 
-### Go: 72 unit tests, 4 fuzz targets
+### Go: 85+ unit tests, 4 fuzz targets
 
 **Round-trip:**
 - RSA-4096-OAEP-SHA-256 key wrapping and unwrapping
@@ -131,6 +134,8 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 **Format integrity:**
 - EncryptedChunk opcode (`0x81`) present in output
 - EncryptedAttachment opcode (`0x82`) present in output when source has attachments
+- EncryptedMetadata opcode (`0x83`) present in output when source has Metadata records and metadata mode is not `plaintext`
+- EncryptedMetadata records absent when metadata mode is `plaintext` (default)
 - ChunkIndex (`0x08`) and Statistics (`0x0A`) present in summary section
 - WrappedKeyAttachment and ManifestAttachment present
 - Schema (`0x03`) and Channel (`0x04`) records readable without a key
@@ -151,7 +156,14 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 - Overwrite protection for both encrypt and decrypt
 - Same input and output path rejected
 - Private key material zeroed after use (RSA and X25519)
-- Metadata passthrough, header profile preserved
+- Metadata passthrough verified (plaintext mode), header profile preserved
+
+**Encrypted metadata:**
+- Plaintext (default) mode: Metadata records pass through unchanged, readable without a key
+- encrypt mode: map encrypted, record name visible; name tamper detected via AAD
+- encrypt-all mode: full payload (name + map) encrypted; neither visible without a key
+- Ciphertext tamper rejected (AEAD tag failure) for both encrypt and encrypt-all modes
+- Round-trip verified for both modes across Go, TypeScript, and Python
 
 **Key rotation:**
 - Round-trip: encrypt with key A, rotate to key B, decrypt with key B — messages match original
@@ -171,9 +183,13 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 - `FuzzDecodeWrappedKeyData`
 - `FuzzStreamDecrypt` (found INT-2025-001, INT-2025-002, INT-2025-003)
 
-### TypeScript: 69 unit tests
+### TypeScript: 80 unit tests
 
-Covers RSA-4096 and X25519 key wrapping, KDF test vector (HKDF-SHA-256 output anchored against the Go reference), full AAD field tamper parity with Go (chunkAAD unit tests + end-to-end splice tests for all mutable fields + fileId tamper + chunk reordering), encrypted attachment round-trip and tamper rejection, key rotation (round-trip, old key rejected, multi-recipient, non-encrypted rejection, X25519 rotation), warn callback (fires on malformed slot, silent on clean decrypt), and format compatibility with the Go implementation.
+Covers RSA-4096 and X25519 key wrapping, KDF test vector (HKDF-SHA-256 output anchored against the Go reference), full AAD field tamper parity with Go (chunkAAD unit tests + end-to-end splice tests for all mutable fields + fileId tamper + chunk reordering), encrypted attachment round-trip and tamper rejection, key rotation (round-trip, old key rejected, multi-recipient, non-encrypted rejection, X25519 rotation), warn callback (fires on malformed key attachment slots and to stay silent on clean decrypts), and metadata encryption round-trip and tamper rejection (encrypt and encrypt-all modes), and format compatibility with the Go implementation.
+
+### Python: 33 unit tests (4 interop tests skipped when Go binary is absent)
+
+Covers RSA-4096 and X25519 key wrapping, full encrypt/decrypt round-trip, inspect (no key required), key rotation (round-trip and multi-recipient), streaming message iteration, and metadata encryption (plaintext default, encrypt, encrypt-all modes, tamper rejection, invalid mode error). The 4 interop tests verify Go-encrypts/Python-decrypts and Python-encrypts/Go-decrypts for both RSA and X25519 recipients.
 
 ### Cross-language interop: 8 tests
 
@@ -190,4 +206,4 @@ Run as a dedicated CI job on every push.
 
 ### Re-encrypt guard
 
-Both Go and TypeScript return an explicit error when the input file is already encrypted (contains opcode `0x81` or `0x82`). Go verifies no partial output file is left on disk. This prevents the prior silent behavior where re-encrypting an encrypted MCAP would produce an output with no chunks and no user attachments.
+Both Go and TypeScript return an explicit error when the input file is already encrypted (contains opcode `0x81`, `0x82`, or `0x83`). Go verifies no partial output file is left on disk. This prevents the prior silent behavior where re-encrypting an encrypted MCAP would produce an output with no chunks and no user attachments.
