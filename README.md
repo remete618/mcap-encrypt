@@ -21,7 +21,7 @@ MCAP is the native format for [Foxglove Studio](https://foxglove.dev/studio) and
 
 > **Status:** v0.x, experimental, not externally audited.  
 > **Best for:** MCAP logs at rest; Foxglove Studio visualization via bridge; schemas and channels always accessible.  
-> **Not for:** hiding topic names, timestamps, or schema definitions (those stay readable by design).
+> **Not for:** hiding ROS topic names, schema definitions, or chunk-level timestamps. Those stay readable by design regardless of which encryption level you choose.
 
 ---
 
