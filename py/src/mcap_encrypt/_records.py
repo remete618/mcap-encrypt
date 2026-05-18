@@ -34,6 +34,7 @@ OP_DATA_END = 0x0F
 # Custom opcodes
 OP_ENCRYPTED_CHUNK = 0x81
 OP_ENCRYPTED_ATTACHMENT = 0x82
+OP_ENCRYPTED_METADATA = 0x83
 
 # Maximum allowed record payload size (4 GiB). Guards against hostile input.
 _MAX_RECORD_SIZE = 1 << 32

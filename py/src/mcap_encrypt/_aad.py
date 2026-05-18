@@ -46,6 +46,25 @@ def chunk_aad(
     return bytes(out)
 
 
+def metadata_aad(
+    file_id: bytes,
+    flags: int,
+    name: str,
+) -> bytes:
+    """Build the AEAD additional data for one EncryptedMetadata record.
+
+    flags=0x00 (encrypt): AAD = file_id + uint32_LE(len(name)) + utf8_name
+    flags=0x01 (encrypt-all): AAD = file_id only
+    """
+    out = bytearray()
+    out += file_id
+    if flags == 0x00:
+        name_b = name.encode("utf-8")
+        out += struct.pack("<I", len(name_b))
+        out += name_b
+    return bytes(out)
+
+
 def attachment_aad(
     file_id: bytes,
     name: str,

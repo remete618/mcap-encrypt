@@ -11,7 +11,7 @@ from typing import Union
 
 from ._xchacha import XChaCha20Poly1305
 
-from ._aad import attachment_aad, chunk_aad
+from ._aad import attachment_aad, chunk_aad, metadata_aad
 from ._keys import (
     WrappedKeyData,
     _FILE_ID_SIZE,
@@ -30,6 +30,7 @@ from ._records import (
     OP_DATA_END,
     OP_ENCRYPTED_ATTACHMENT,
     OP_ENCRYPTED_CHUNK,
+    OP_ENCRYPTED_METADATA,
     OP_FOOTER,
     OP_HEADER,
     OP_METADATA,
@@ -234,6 +235,74 @@ def _encrypt_attachment_data(
     )
 
 
+_METADATA_FLAG_ENCRYPT = 0x00      # name plaintext, map encrypted
+_METADATA_FLAG_ENCRYPT_ALL = 0x01  # name + map both encrypted
+
+
+def _encode_encrypted_metadata(
+    flags: int,
+    name: str,
+    nonce: bytes,
+    encrypted_data: bytes,
+) -> bytes:
+    """Encode an EncryptedMetadata record payload (opcode 0x83)."""
+    name_b = name.encode("utf-8")
+    out = bytearray()
+    out += struct.pack("B", flags)
+    out += struct.pack("<I", len(name_b))
+    out += name_b
+    out += struct.pack("<I", len(nonce))
+    out += nonce
+    out += struct.pack("<I", len(encrypted_data))
+    out += encrypted_data
+    return bytes(out)
+
+
+def _encrypt_metadata_record(
+    payload: bytes,
+    sym_key: bytes,
+    file_id: bytes,
+    mode: str,
+) -> bytes:
+    """Encrypt one Metadata record payload.
+
+    payload: raw MCAP Metadata payload (name_bytes + map_bytes)
+    mode: "encrypt" or "encrypt-all"
+    Returns: EncryptedMetadata payload bytes (opcode 0x83)
+    """
+    nonce = secrets.token_bytes(_XCHACHA20_NONCE_SIZE)
+    aead = XChaCha20Poly1305(sym_key)
+
+    if mode == "encrypt":
+        # Extract name from the payload prefix (uint32 LE + utf8)
+        if len(payload) < 4:
+            raise ValueError("metadata payload too short")
+        (name_len,) = struct.unpack_from("<I", payload)
+        if 4 + name_len > len(payload):
+            raise ValueError("truncated metadata name")
+        name = payload[4 : 4 + name_len].decode("utf-8")
+        map_bytes = payload[4 + name_len:]
+        aad = metadata_aad(file_id, _METADATA_FLAG_ENCRYPT, name)
+        ciphertext = aead.encrypt(nonce, map_bytes, aad)
+        return _encode_encrypted_metadata(
+            flags=_METADATA_FLAG_ENCRYPT,
+            name=name,
+            nonce=nonce,
+            encrypted_data=ciphertext,
+        )
+    elif mode == "encrypt-all":
+        aad = metadata_aad(file_id, _METADATA_FLAG_ENCRYPT_ALL, "")
+        ciphertext = aead.encrypt(nonce, payload, aad)
+        return _encode_encrypted_metadata(
+            flags=_METADATA_FLAG_ENCRYPT_ALL,
+            name="",
+            nonce=nonce,
+            encrypted_data=ciphertext,
+        )
+    else:
+        raise ValueError(f"unsupported metadata mode {mode!r}")
+
+
 def _build_wrapped_key_attachment(
     wkd: WrappedKeyData,
     now: int,
@@ -336,6 +405,8 @@ def _build_summary(
 def encrypt_mcap(
     input_bytes: bytes,
     public_keys: Union[str, list[str]],
+    *,
+    metadata: str = "plaintext",
 ) -> bytes:
     """Encrypt a chunked MCAP file.
 
@@ -343,28 +414,37 @@ def encrypt_mcap(
         input_bytes: Raw bytes of a standard (unencrypted) chunked MCAP file.
         public_keys: One or more PEM public keys (RSA or X25519). Each recipient
             can independently decrypt the file with their corresponding private key.
+        metadata: How to handle Metadata records. One of:
+            "plaintext" (default) — pass through unchanged.
+            "encrypt" — encrypt the metadata map; keep the record name readable.
+            "encrypt-all" — encrypt both the name and the map; nothing visible
+            without the private key.
 
     Returns:
         Encrypted MCAP as bytes.
 
     Raises:
         ValueError: If input is already encrypted, not a valid MCAP, has no chunks,
-            or public_keys is empty.
+            public_keys is empty, or metadata value is invalid.
     """
     if isinstance(public_keys, str):
         public_keys = [public_keys]
     if not public_keys:
         raise ValueError("at least one public key is required")
+    if metadata not in ("plaintext", "encrypt", "encrypt-all"):
+        raise ValueError(
+            f"metadata must be 'plaintext', 'encrypt', or 'encrypt-all'; got {metadata!r}"
+        )
 
     # Validate magic.
     read_magic(input_bytes)
 
     # Check for already-encrypted input.
     for opcode, _ in iter_records(input_bytes, start=8):
-        if opcode in (OP_ENCRYPTED_CHUNK, OP_ENCRYPTED_ATTACHMENT):
+        if opcode in (OP_ENCRYPTED_CHUNK, OP_ENCRYPTED_ATTACHMENT, OP_ENCRYPTED_METADATA):
             raise ValueError(
-                "input is already encrypted (contains EncryptedChunk or "
-                "EncryptedAttachment records); decrypt first"
+                "input is already encrypted (contains EncryptedChunk, "
+                "EncryptedAttachment, or EncryptedMetadata records); decrypt first"
             )
 
     # Generate symmetric key and file ID.
@@ -562,7 +642,18 @@ def encrypt_mcap(
             continue
 
         elif opcode == OP_METADATA:
-            emit(OP_METADATA, payload)
+            if metadata == "plaintext":
+                emit(OP_METADATA, payload)
+            elif metadata in ("encrypt", "encrypt-all"):
+                em_payload = _encrypt_metadata_record(
+                    payload=payload,
+                    sym_key=bytes(sym_key),
+                    file_id=file_id,
+                    mode=metadata,
+                )
+                emit(OP_ENCRYPTED_METADATA, em_payload)
+            else:
+                raise ValueError(f"unsupported metadata mode {metadata!r}")
 
     if not chunk_has_been_seen:
         # Zero sym_key before raising.

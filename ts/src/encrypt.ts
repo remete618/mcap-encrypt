@@ -12,11 +12,17 @@ import {
   OP_METADATA,
   OP_ENCRYPTED_CHUNK,
   OP_ENCRYPTED_ATTACHMENT,
+  OP_ENCRYPTED_METADATA,
   readMagic,
   readRecord,
   writeRecord,
   writeMagic,
 } from "./record.js";
+import {
+  encryptMetadata,
+  encodeEncryptedMetadata,
+  type MetadataMode,
+} from "./metadata.js";
 import { encodeEncryptedChunk, type EncryptedChunk } from "./chunk.js";
 import {
   encryptAttachmentData,
@@ -109,11 +115,21 @@ function encodeAttachment(
   return w.toUint8Array();
 }
 
+export interface EncryptMcapOptions {
+  // metadataMode controls how Metadata records are handled.
+  // "plaintext" (default): pass through unchanged.
+  // "encrypt": encrypt the map; keep the record name readable.
+  // "encrypt-all": encrypt both name and map.
+  metadataMode?: MetadataMode;
+}
+
 export async function encryptMcap(
   input: Uint8Array,
   publicKeyPem: string | string[],
+  options?: EncryptMcapOptions,
 ): Promise<Uint8Array> {
   const pubKeys = Array.isArray(publicKeyPem) ? publicKeyPem : [publicKeyPem];
+  const metadataMode: MetadataMode = options?.metadataMode ?? "plaintext";
   if (pubKeys.length === 0) throw new Error("at least one public key is required");
 
   const symKey = randomBytes(KEY_SIZE);
@@ -231,7 +247,12 @@ export async function encryptMcap(
 
       case OP_METADATA: {
         flushPending();
-        writeRecord(writer, OP_METADATA, data);
+        if (metadataMode === "encrypt" || metadataMode === "encrypt-all") {
+          const em = encryptMetadata(new Uint8Array(data), symKey, fileId, metadataMode);
+          writeRecord(writer, OP_ENCRYPTED_METADATA, encodeEncryptedMetadata(em));
+        } else {
+          writeRecord(writer, OP_METADATA, data);
+        }
         break;
       }
 
@@ -253,6 +274,7 @@ export async function encryptMcap(
 
       case OP_ENCRYPTED_CHUNK:
       case OP_ENCRYPTED_ATTACHMENT:
+      case OP_ENCRYPTED_METADATA:
         throw new Error(
           `input is already encrypted (found opcode 0x${opcode.toString(16).padStart(2, "0")}); ` +
           "decrypt first before re-encrypting",

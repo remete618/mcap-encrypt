@@ -1,4 +1,5 @@
-export { encryptMcap } from "./encrypt.js";
+export { encryptMcap, type EncryptMcapOptions } from "./encrypt.js";
+export type { MetadataMode } from "./metadata.js";
 export { decryptMcap, iterateMessages } from "./decrypt.js";
 export { rotateMcapKeys } from "./rotate.js";
 export { inspectMcap, type InspectResult, type RecipientInfo } from "./inspect.js";

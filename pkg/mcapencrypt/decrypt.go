@@ -183,9 +183,10 @@ func streamDecrypt(r io.Reader, w io.Writer, unwrap func(kekAlg string, wrappedK
 		inputHdr         *mcap.Header
 		schemas          []*mcap.Schema
 		channels         []*mcap.Channel
-		attachments      []*mcap.Attachment // non-key plaintext attachments to pass through
-		metadataRecs     []*mcap.Metadata   // metadata records to pass through
-		manifestPayload  []byte             // raw bytes from the manifest attachment
+		attachments      []*mcap.Attachment   // non-key plaintext attachments to pass through
+		metadataRecs     []*mcap.Metadata     // plaintext metadata records
+		encMetadataRecs  []*EncryptedMetadata // encrypted metadata records (decrypted in finalize)
+		manifestPayload  []byte               // raw bytes from the manifest attachment
 		writer           *mcap.Writer
 	)
 
@@ -347,6 +348,13 @@ scan:
 				Data:       bytes.NewReader(plainData),
 			})
 
+		case OpcodeEncryptedMetadata:
+			em, decErr := DecodeEncryptedMetadata(data)
+			if decErr != nil {
+				return fmt.Errorf("decode encrypted metadata: %w", decErr)
+			}
+			encMetadataRecs = append(encMetadataRecs, em)
+
 		case OpcodeEncryptedChunk:
 			if symKey == nil {
 				if wkaCount == 0 {
@@ -440,6 +448,19 @@ scan:
 	for _, m := range metadataRecs {
 		if err := writer.WriteMetadata(m); err != nil {
 			return fmt.Errorf("write metadata %q: %w", m.Name, err)
+		}
+	}
+	for _, em := range encMetadataRecs {
+		plain, decErr := decryptMetadataRecord(em, symKey, fileID)
+		if decErr != nil {
+			return fmt.Errorf("decrypt metadata record: %w", decErr)
+		}
+		m, parseErr := mcap.ParseMetadata(plain)
+		if parseErr != nil {
+			return fmt.Errorf("parse decrypted metadata: %w", parseErr)
+		}
+		if err := writer.WriteMetadata(m); err != nil {
+			return fmt.Errorf("write decrypted metadata %q: %w", m.Name, err)
 		}
 	}
 	return writer.Close()

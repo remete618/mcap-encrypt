@@ -17,9 +17,26 @@ import (
 	"github.com/foxglove/mcap/go/mcap"
 )
 
+// EncryptOptions carries optional parameters for EncryptWithOptions.
+type EncryptOptions struct {
+	// MetadataMode controls how Metadata records are handled.
+	// MetadataPlaintext (default): pass through unchanged.
+	// MetadataEncrypt: encrypt the metadata map; keep the record name readable.
+	// MetadataEncryptAll: encrypt both name and map; nothing visible without key.
+	MetadataMode MetadataMode
+
+	// Progress, if non-nil, receives cumulative bytes written after each chunk.
+	Progress func(int64)
+}
+
 // Encrypt encrypts a standard MCAP file using a single RSA or X25519 public key.
 func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 	return EncryptMulti(inputPath, outputPath, []string{pubKeyPath})
+}
+
+// EncryptWithOptions is like EncryptMulti but accepts an EncryptOptions struct.
+func EncryptWithOptions(inputPath, outputPath string, pubKeyPaths []string, opts EncryptOptions) error {
+	return encryptCore(inputPath, outputPath, pubKeyPaths, opts)
 }
 
 // EncryptMulti encrypts a standard MCAP file. The symmetric key is wrapped
@@ -36,6 +53,14 @@ func Encrypt(inputPath, outputPath, pubKeyPath string) error {
 // EncryptMulti encrypts a standard MCAP file for one or more recipients.
 // The optional progress callback receives cumulative bytes written to the output.
 func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string, progress ...func(int64)) (retErr error) {
+	var cb func(int64)
+	if len(progress) > 0 {
+		cb = progress[0]
+	}
+	return encryptCore(inputPath, outputPath, pubKeyPaths, EncryptOptions{Progress: cb})
+}
+
+func encryptCore(inputPath, outputPath string, pubKeyPaths []string, opts EncryptOptions) (retErr error) {
 	if len(pubKeyPaths) == 0 {
 		return fmt.Errorf("at least one public key is required")
 	}
@@ -107,7 +132,7 @@ func EncryptMulti(inputPath, outputPath string, pubKeyPaths []string, progress .
 	if enc, checkErr := containsEncryptedRecords(inputPath); checkErr != nil {
 		return fmt.Errorf("check input: %w", checkErr)
 	} else if enc {
-		return fmt.Errorf("input is already encrypted (contains EncryptedChunk/EncryptedAttachment records); " +
+		return fmt.Errorf("input is already encrypted (contains EncryptedChunk/EncryptedAttachment/EncryptedMetadata records); " +
 			"decrypt first with 'mcap-encrypt decrypt'")
 	}
 
@@ -305,8 +330,25 @@ outer:
 			if err := flushPending(); err != nil {
 				return err
 			}
-			if err := WriteRecord(tmpFile, passthroughOpcode[tok], data); err != nil {
-				return err
+			mode := opts.MetadataMode
+			if mode == "" {
+				mode = MetadataPlaintext
+			}
+			switch mode {
+			case MetadataPlaintext:
+				if err := WriteRecord(tmpFile, passthroughOpcode[tok], data); err != nil {
+					return err
+				}
+			case MetadataEncrypt, MetadataEncryptAll:
+				em, emErr := encryptMetadataRecord(data, symKey, fileID, mode)
+				if emErr != nil {
+					return fmt.Errorf("encrypt metadata: %w", emErr)
+				}
+				if err := WriteRecord(tmpFile, OpcodeEncryptedMetadata, em.Encode()); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unknown metadata mode %q", mode)
 			}
 
 		case mcap.TokenChunk:
@@ -336,8 +378,8 @@ outer:
 			if seekErr != nil {
 				return fmt.Errorf("seek after chunk %d: %w", chunkIdx-1, seekErr)
 			}
-			if len(progress) > 0 && progress[0] != nil {
-				progress[0](endOff)
+			if opts.Progress != nil {
+				opts.Progress(endOff)
 			}
 			encChunkMetas = append(encChunkMetas, encChunkMeta{
 				fileOffset:     startOff,
@@ -562,12 +604,21 @@ outer:
 // The optional progress callback receives the cumulative bytes written to the
 // encrypted output after each chunk, matching the behaviour of EncryptMulti.
 func EncryptStream(r io.Reader, w io.Writer, pubKeyPems []string, progress ...func(int64)) (retErr error) {
+	var cb func(int64)
+	if len(progress) > 0 {
+		cb = progress[0]
+	}
+	return EncryptStreamWithOptions(r, w, pubKeyPems, EncryptOptions{Progress: cb})
+}
+
+// EncryptStreamWithOptions is like EncryptStream but accepts an EncryptOptions struct.
+func EncryptStreamWithOptions(r io.Reader, w io.Writer, pubKeyPems []string, opts EncryptOptions) (retErr error) {
 	if len(pubKeyPems) == 0 {
 		return fmt.Errorf("at least one public key is required")
 	}
 
 	// Write public-key PEMs to a per-call temp directory so the path-based
-	// EncryptMulti can load them. Public keys are not secret.
+	// encryptCore can load them. Public keys are not secret.
 	keyDir, err := os.MkdirTemp("", ".mcap-encrypt-stream-keys-*")
 	if err != nil {
 		return fmt.Errorf("create key temp dir: %w", err)
@@ -599,11 +650,11 @@ func EncryptStream(r io.Reader, w io.Writer, pubKeyPems []string, progress ...fu
 		return fmt.Errorf("flush temp input: %w", err)
 	}
 
-	// EncryptMulti checks that the output path does not exist before creating it.
+	// encryptCore checks that the output path does not exist before creating it.
 	tmpOutPath := tmpInPath + ".enc"
 	defer os.Remove(tmpOutPath)
 
-	if err := EncryptMulti(tmpInPath, tmpOutPath, keyPaths, progress...); err != nil {
+	if err := encryptCore(tmpInPath, tmpOutPath, keyPaths, opts); err != nil {
 		return err
 	}
 
@@ -714,7 +765,7 @@ func containsEncryptedRecords(path string) (bool, error) {
 		}
 		opcode := hdr[0]
 		length := binary.LittleEndian.Uint64(hdr[1:])
-		if opcode == OpcodeEncryptedChunk || opcode == OpcodeEncryptedAttachment {
+		if opcode == OpcodeEncryptedChunk || opcode == OpcodeEncryptedAttachment || opcode == OpcodeEncryptedMetadata {
 			return true, nil
 		}
 		if length > maxRecordDataSize {

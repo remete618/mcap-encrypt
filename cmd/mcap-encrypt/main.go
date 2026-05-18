@@ -22,7 +22,7 @@ const usage = `mcap-encrypt: encrypt and decrypt MCAP files with XChaCha20-Poly1
 
 Usage:
   mcap-encrypt keygen   --out <basename>
-  mcap-encrypt encrypt  --key <pub.pem> [--key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+  mcap-encrypt encrypt  --key <pub.pem> [--key <pub2.pem>...] [--metadata plaintext|encrypt|encrypt-all] [--force] <input.mcap> <output.mcap>
   mcap-encrypt decrypt  --key <priv.pem> [--force] <input.mcap> <output.mcap>
   mcap-encrypt rotate   --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
   mcap-encrypt inspect  <input.mcap>
@@ -299,6 +299,7 @@ func runEncrypt(args []string) {
 	var keys stringList
 	fs.Var(&keys, "key", "path to RSA-4096 or X25519 public key (.pub.pem); repeat for multiple recipients")
 	force := fs.Bool("force", false, "overwrite output file if it exists")
+	metadataMode := fs.String("metadata", "plaintext", "how to handle Metadata records: plaintext|encrypt|encrypt-all")
 	_ = fs.Parse(args)
 
 	if len(keys) == 0 {
@@ -308,6 +309,18 @@ func runEncrypt(args []string) {
 		fatal(fmt.Errorf("usage: encrypt --key <pub.pem> <input.mcap> <output.mcap>"))
 	}
 	input, output := fs.Arg(0), fs.Arg(1)
+
+	var mode mcapencrypt.MetadataMode
+	switch *metadataMode {
+	case "plaintext", "":
+		mode = mcapencrypt.MetadataPlaintext
+	case "encrypt":
+		mode = mcapencrypt.MetadataEncrypt
+	case "encrypt-all":
+		mode = mcapencrypt.MetadataEncryptAll
+	default:
+		fatal(fmt.Errorf("unknown --metadata value %q: must be plaintext, encrypt, or encrypt-all", *metadataMode))
+	}
 
 	if err := checkMCAPMagic(input); err != nil {
 		fatal(fmt.Errorf("input is not a valid MCAP file: %w", err))
@@ -328,8 +341,9 @@ func runEncrypt(args []string) {
 	var progressBytes atomic.Int64
 	stop := startProgress("encrypting", inputSize, &progressBytes)
 	start := time.Now()
-	err := mcapencrypt.EncryptMulti(input, output, []string(keys), func(n int64) {
-		progressBytes.Store(n)
+	err := mcapencrypt.EncryptWithOptions(input, output, []string(keys), mcapencrypt.EncryptOptions{
+		MetadataMode: mode,
+		Progress:     func(n int64) { progressBytes.Store(n) },
 	})
 	close(stop)
 	elapsed := time.Since(start)

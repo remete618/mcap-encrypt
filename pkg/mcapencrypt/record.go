@@ -16,6 +16,7 @@ const (
 
 	OpcodeEncryptedChunk      = byte(0x81)
 	OpcodeEncryptedAttachment = byte(0x82)
+	OpcodeEncryptedMetadata   = byte(0x83)
 
 	opcodeHeader        = byte(0x01)
 	opcodeFooter        = byte(0x02)

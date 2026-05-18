@@ -5,10 +5,11 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- **Optional metadata encryption (format v6)**: `Metadata` records can now be encrypted with three modes: `plaintext` (default, pass-through), `encrypt` (map encrypted, name visible in the file), and `encrypt-all` (both name and map encrypted). Encrypted records use opcode `0x83` (`EncryptedMetadata`). AAD for `encrypt` mode binds `file_id + name`, preventing cross-record substitution; AAD for `encrypt-all` binds `file_id` only. Standard MCAP readers skip opcode `0x83` gracefully. Go: `EncryptOptions.MetadataMode`; TypeScript: `EncryptMcapOptions.metadataMode`; Python: `encrypt_mcap(..., metadata=...)`. CLI: `mcap-encrypt encrypt --metadata encrypt|encrypt-all`. Wire format backward-compatible: existing files produced without the flag are unchanged.
 - **`inspect` command (Go and TypeScript)**: `InspectFile`/`Inspect` (Go) and `inspectMcap` (TypeScript) return file metadata — `IsEncrypted`, format version, `FileID`, chunk count, compression, and per-recipient `KeyID`+`KEKAlg` — without decrypting any chunk data. No private key required. CLI: `mcap-encrypt inspect <input.mcap>`. 4 Go tests, 4 TypeScript tests.
 - **Performance benchmarks in README**: `## Performance` section with throughput table (Small/Medium/Large) measured on Apple M3, covering encrypt and decrypt. Reproduce with `go test ./pkg/mcapencrypt/ -bench='BenchmarkEncrypt|BenchmarkDecrypt' -benchtime=5s`.
 - **Streaming encrypt API (Go)**: `EncryptStream(r io.Reader, w io.Writer, pubKeyPems []string, ...)` accepts arbitrary `io.Reader`/`io.Writer` pairs. Input is buffered to a temp file (two-pass encrypt requires seekable input); public-key PEM strings are passed directly without file I/O. `ParsePublicKeyPEM(string) (any, error)` added for in-memory key parsing. 5 new unit tests (round-trip, multi-recipient, wrong-key rejection, re-encrypt guard, empty-key guard).
-- **Python library** (`py/`): `encrypt_mcap`, `decrypt_mcap`, `iterate_messages`, `inspect_mcap`, `rotate_mcap_keys`, `generate_key_pair`, `generate_x25519_key_pair`. XChaCha20-Poly1305 backed by pynacl (libsodium) for `cryptography>=42` compatibility. 4 test modules: roundtrip, inspect, rotate, interop. All 31 Python tests pass; 4 interop tests verify Go-encrypts/Python-decrypts and Python-encrypts/Go-decrypts for both RSA and X25519.
+- **Python library** (`py/`): `encrypt_mcap`, `decrypt_mcap`, `iterate_messages`, `inspect_mcap`, `rotate_mcap_keys`, `generate_key_pair`, `generate_x25519_key_pair`. XChaCha20-Poly1305 backed by pynacl (libsodium) for `cryptography>=42` compatibility. 4 test modules: roundtrip, inspect, rotate, interop. All 33 Python tests pass (4 interop tests skipped when Go binary absent); 4 interop tests verify Go-encrypts/Python-decrypts and Python-encrypts/Go-decrypts for both RSA and X25519.
 
 ### Fixed
 - **Zero-size chunk skip in decrypt loop (Go)**: `DecryptWithOptions`/`Decrypt` now silently skip `EncryptedChunk` records where `UncompressedSize == 0` instead of forwarding an empty payload to `writeChunkMessages`. AEAD authentication already verified the chunk before the guard triggers. Test added in `guards_test.go` using an in-memory MCAP with a genuinely zero-size encrypted chunk.
@@ -54,7 +55,7 @@ All notable changes to this project are documented here.
 - LZ4-compressed chunks transparently re-compressed as zstd on encrypt (JS-compatible). TypeScript rejects LZ4 source files.
 - Encrypted output no longer carries the source MCAP index; decrypted output is fully re-indexed.
 
-### Tests (Go: 72 unit tests, 4 fuzz targets; TypeScript: 69; interop: 8)
+### Tests (Go: 85+ unit tests, 4 fuzz targets; TypeScript: 80; Python: 33; interop: 8)
 - Nonce uniqueness across all chunks in a file.
 - All AAD fields independently tampered (message_start_time, message_end_time, uncompressed_size, uncompressed_crc, slot_id, compression).
 - FileID tampered in the wrapped-key attachment (caught by chunk AAD mismatch).
@@ -102,3 +103,4 @@ All notable changes to this project are documented here.
 | 3 | Manifest attachment required on decrypt; strip-attack prevention via HMAC-SHA-256. X25519 key-wrapping algorithm added. |
 | 4 | Summary section added after `DataEnd`: `Schema`, `Channel`, `Statistics`, `ChunkIndex`, `SummaryOffset`. Enables O(log n) time-range seeking without decryption. |
 | 5 | `EncryptedAttachment` record (opcode `0x82`) added. Attachment data encrypted; name and media type remain plaintext. |
+| 6 | `EncryptedMetadata` record (opcode `0x83`) added. Metadata map (and optionally name) can be encrypted with `encrypt` or `encrypt-all` mode. Default (`plaintext`) produces no wire-format change. |

@@ -304,7 +304,18 @@ Encrypts a standard MCAP file. Input must be a chunked MCAP (non-chunked files a
 | Flag | Description |
 |---|---|
 | `--key <pub.pem>` | Path to RSA-4096 or X25519 public key. Repeatable for multiple recipients. Required. |
+| `--metadata plaintext\|encrypt\|encrypt-all` | How to handle Metadata records (see table below). Default: `plaintext`. |
 | `--force` | Overwrite output file if it exists. |
+
+**Metadata encryption modes** (opcode `0x83`, format v6):
+
+| Mode | What is visible without a key | What is encrypted |
+|---|---|---|
+| `plaintext` (default) | Name + all key-value pairs | Nothing — full passthrough |
+| `encrypt` | Record name only | All key-value pairs |
+| `encrypt-all` | Nothing | Name + all key-value pairs |
+
+Foxglove Studio skips unknown opcode `0x83` records entirely, so `encrypt` and `encrypt-all` are both fully opaque to Studio without a key. The difference only matters for `mcap-encrypt inspect` and external tooling that reads encrypted files directly.
 
 While running, the CLI shows a live progress bar:
 
@@ -424,6 +435,12 @@ if err := mcapencrypt.RotateKeyFile("encrypted.mcap", "rotated.mcap", "old.priv.
 err := mcapencrypt.EncryptStream(r, w, []string{pubKeyPem})
 err  = mcapencrypt.EncryptStream(r, w, []string{alicePem, bobPem}) // multi-recipient
 
+// Encrypt with options (metadata mode, progress callback)
+err = mcapencrypt.EncryptWithOptions("input.mcap", "enc.mcap", []string{"mykey.pub.pem"}, mcapencrypt.EncryptOptions{
+    MetadataMode: mcapencrypt.MetadataEncrypt,     // or MetadataEncryptAll / MetadataPlaintext
+    Progress:     func(n int64) { fmt.Printf("%d bytes written\n", n) },
+})
+
 // Parse a public key from a PEM string (no file I/O)
 pub, err := mcapencrypt.ParsePublicKeyPEM(pubKeyPem) // *rsa.PublicKey or *ecdh.PublicKey
 
@@ -486,7 +503,7 @@ for await (const { schema, channel, message } of iterateMessages(enc, privateKey
 |---|---|---|
 | `generateKeyPair` | `() => Promise<KeyPair>` | Generates RSA-4096 key pair, returns PEM strings. |
 | `generateX25519KeyPair` | `() => Promise<X25519KeyPair>` | Generates X25519 key pair, returns PEM strings. |
-| `encryptMcap` | `(input: Uint8Array, pubKeyPem: string \| string[]) => Promise<Uint8Array>` | Encrypts a chunked MCAP in memory. Accepts RSA and X25519 public keys; mixed arrays are supported. |
+| `encryptMcap` | `(input: Uint8Array, pubKeyPem: string \| string[], options?: EncryptMcapOptions) => Promise<Uint8Array>` | Encrypts a chunked MCAP in memory. Accepts RSA and X25519 public keys; mixed arrays are supported. `options.metadataMode` controls Metadata record handling (`"plaintext"` default, `"encrypt"`, `"encrypt-all"`). |
 | `decryptMcap` | `(input: Uint8Array, privKeyPem: string, onWarn?: (msg: string) => void) => Promise<Uint8Array>` | Decrypts to a fully-indexed MCAP buffer. Optional `onWarn` called for non-fatal parse issues. |
 | `rotateMcapKeys` | `(input: Uint8Array, oldPrivKeyPem: string, newPubKeyPems: string \| string[]) => Promise<Uint8Array>` | Re-wraps the symmetric key for new recipients without decrypting chunk data. |
 | `inspectMcap` | `(input: Uint8Array) => InspectResult` | Returns metadata (file_id, chunk count, compression, recipients) without decrypting. No private key required. |
@@ -552,7 +569,7 @@ Requires Python 3.10+. XChaCha20-Poly1305 is provided by `pynacl` (libsodium), w
 |---|---|---|
 | `generate_key_pair` | `() -> tuple[str, str]` | Generates RSA-4096 key pair, returns `(pub_pem, priv_pem)`. |
 | `generate_x25519_key_pair` | `() -> tuple[str, str]` | Generates X25519 key pair, returns `(pub_pem, priv_pem)`. |
-| `encrypt_mcap` | `(data: bytes, pub_key_pem: str \| list[str]) -> bytes` | Encrypts a chunked MCAP in memory. Accepts RSA and X25519 public keys; mixed lists are supported. |
+| `encrypt_mcap` | `(data: bytes, pub_key_pem: str \| list[str], *, metadata: str = "plaintext") -> bytes` | Encrypts a chunked MCAP in memory. Accepts RSA and X25519 public keys; mixed lists are supported. `metadata` controls Metadata record handling: `"plaintext"` (default), `"encrypt"` (map only), `"encrypt-all"` (name + map). |
 | `decrypt_mcap` | `(data: bytes, priv_key_pem: str) -> bytes` | Decrypts to a fully-indexed MCAP buffer. |
 | `rotate_mcap_keys` | `(data: bytes, old_priv_pem: str, new_pub_pems: list[str]) -> bytes` | Re-wraps the symmetric key for new recipients without decrypting chunk data. |
 | `inspect_mcap` | `(data: bytes) -> InspectResult` | Returns metadata (file_id, chunk count, compression, recipients) without decrypting. No private key required. |
@@ -590,6 +607,7 @@ All three implementations agree on:
 - X25519-HKDF-SHA256-XChaCha20Poly1305 key wrapping (X25519 recipients): HKDF salt `nil` (RFC 5869 default = 32 zero bytes), info string `"mcap-encrypt x25519 v1"`, wire format `ephem_pub(32) || nonce(24) || ciphertext(48)`
 - `EncryptedChunk` wire format (opcode `0x81`)
 - `EncryptedAttachment` wire format (opcode `0x82`)
+- `EncryptedMetadata` wire format (opcode `0x83`)
 - Wrapped key attachment format (version `0x03`, 16-byte `file_id`, length-prefixed fields; `0x02` is accepted for legacy read-back)
 - PKCS#8 private key format (PEM label `PRIVATE KEY`) and SPKI public key format (PEM label `PUBLIC KEY`) for both RSA and X25519 keys
 
@@ -818,7 +836,7 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 |---|---|---|
 | **No DEK rotation** | `rotate` changes which recipients can decrypt (re-wraps the same symmetric key) but does not generate a new data-encryption key. To replace the DEK itself, decrypt and re-encrypt with a new key. | `mcap-encrypt decrypt --key old.priv.pem enc.mcap plain.mcap && mcap-encrypt encrypt --key new.pub.pem plain.mcap enc2.mcap` |
 | **Attachment metadata is plaintext** | Attachment name, media type, and timestamps are readable without a key. Data is encrypted. | If attachment names are sensitive, use opaque names before writing the MCAP. |
-| **Metadata records are not encrypted** | Arbitrary key-value metadata passes through in plaintext. | Strip or sanitize Metadata records before encrypting if they contain sensitive values. |
+| **Metadata records are plaintext by default** | Arbitrary key-value metadata passes through in plaintext unless `--metadata encrypt` or `--metadata encrypt-all` is used. | Use `--metadata encrypt` to encrypt the map while keeping the name readable, or `--metadata encrypt-all` to encrypt both name and map (Go, TypeScript, Python). |
 | **Chunks are not padded** | Ciphertext length reveals approximate plaintext payload size. | Strip or normalize chunk sizes before encrypting if payload size is sensitive. |
 | **Input must be chunked** | Non-chunked MCAP files are rejected. | Re-encode with chunking enabled (the Foxglove CLI and most MCAP writers produce chunked output by default). |
 | **Bridge loads everything into memory** | Large files require sufficient RAM. | Use `decrypt` to produce a standard file, then open it in Foxglove Studio directly. |

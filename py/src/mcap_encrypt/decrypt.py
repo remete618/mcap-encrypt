@@ -14,7 +14,7 @@ from ._xchacha import XChaCha20Poly1305
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from ._aad import attachment_aad, chunk_aad
+from ._aad import attachment_aad, chunk_aad, metadata_aad
 from ._keys import (
     WrappedKeyData,
     _WRAPPED_KEY_VERSION,
@@ -29,6 +29,7 @@ from ._records import (
     OP_DATA_END,
     OP_ENCRYPTED_ATTACHMENT,
     OP_ENCRYPTED_CHUNK,
+    OP_ENCRYPTED_METADATA,
     OP_FOOTER,
     OP_HEADER,
     OP_MESSAGE,
@@ -145,6 +146,84 @@ def _decode_encrypted_attachment(payload: bytes) -> dict:
     }
 
 
+def _decode_encrypted_metadata(payload: bytes) -> dict:
+    """Parse EncryptedMetadata payload. Returns a dict of fields."""
+    if len(payload) < 1:
+        raise ValueError(f"encrypted metadata payload too short ({len(payload)} bytes)")
+    off = 0
+
+    flags = payload[off]
+    off += 1
+    if flags not in (0x00, 0x01):
+        raise ValueError(f"unknown encrypted metadata flags 0x{flags:02x}")
+
+    def get_str(o: int):
+        if o + 4 > len(payload):
+            raise ValueError(f"truncated string length at offset {o}")
+        (n,) = struct.unpack_from("<I", payload, o)
+        o += 4
+        if o + n > len(payload):
+            raise ValueError(f"truncated string data at offset {o}")
+        return payload[o : o + n].decode("utf-8"), o + n
+
+    def get_bytes_field(o: int):
+        if o + 4 > len(payload):
+            raise ValueError(f"truncated bytes length at offset {o}")
+        (n,) = struct.unpack_from("<I", payload, o)
+        o += 4
+        if o + n > len(payload):
+            raise ValueError(f"truncated bytes data at offset {o}")
+        return bytes(payload[o : o + n]), o + n
+
+    name, off = get_str(off)
+    nonce, off = get_bytes_field(off)
+    encrypted_data, off = get_bytes_field(off)
+
+    return {
+        "flags": flags,
+        "name": name,
+        "nonce": nonce,
+        "encrypted_data": encrypted_data,
+    }
+
+
+def _decrypt_metadata_record(em: dict, sym_key: bytes, file_id: bytes) -> bytes:
+    """Decrypt one EncryptedMetadata and return the plaintext MCAP Metadata payload."""
+    nonce = em["nonce"]
+    enc_data = em["encrypted_data"]
+    flags = em["flags"]
+    name = em["name"]
+
+    if len(nonce) != _XCHACHA20_NONCE_SIZE:
+        raise ValueError(
+            f"encrypted metadata nonce length {len(nonce)} invalid "
+            f"(want {_XCHACHA20_NONCE_SIZE})"
+        )
+    if len(enc_data) < 16:
+        raise ValueError(
+            f"encrypted metadata ciphertext too short ({len(enc_data)} bytes, minimum 16)"
+        )
+
+    aad = metadata_aad(file_id=file_id, flags=flags, name=name)
+    aead = XChaCha20Poly1305(sym_key)
+    try:
+        plain = aead.decrypt(nonce, enc_data, aad)
+    except Exception as exc:
+        raise ValueError("decrypt metadata: AEAD authentication failed") from exc
+
+    if flags == 0x01:
+        # full metadata payload
+        return bytes(plain)
+
+    # flags == 0x00: plain = map bytes only; prepend the plaintext name
+    name_b = name.encode("utf-8")
+    out = bytearray()
+    out += struct.pack("<I", len(name_b))
+    out += name_b
+    out += plain
+    return bytes(out)
+
+
 # -------------------------------------------------------------------------
 # Decompression helpers
 # -------------------------------------------------------------------------
@@ -188,6 +267,7 @@ def _stream_decrypt(input_bytes: bytes, private_key: RSAPrivateKey | X25519Priva
     # Buffered attachments: (log_time, create_time, name, media_type, data)
     attachments: list[tuple] = []
     metadata_records: list[bytes] = []
+    encrypted_metadata_recs: list[dict] = []  # buffered EncryptedMetadata records
 
     for opcode, payload in iter_records(input_bytes, start=8):
         if opcode == OP_HEADER:
@@ -278,6 +358,13 @@ def _stream_decrypt(input_bytes: bytes, private_key: RSAPrivateKey | X25519Priva
                 ea["log_time"], ea["create_time"],
                 ea["name"], ea["media_type"], plain,
             ))
+
+        elif opcode == OP_ENCRYPTED_METADATA:
+            try:
+                em = _decode_encrypted_metadata(payload)
+            except ValueError as exc:
+                raise ValueError(f"decode encrypted metadata: {exc}") from exc
+            encrypted_metadata_recs.append(em)
 
         elif opcode == OP_ENCRYPTED_CHUNK:
             if sym_key is None:
@@ -463,9 +550,17 @@ def _stream_decrypt(input_bytes: bytes, private_key: RSAPrivateKey | X25519Priva
         chunk_payload += inner_bytes
         out += write_record(OP_CHUNK, bytes(chunk_payload))
 
-    # Metadata records
+    # Metadata records (plaintext)
     for mr in metadata_records:
         out += write_record(OP_METADATA, mr)
+
+    # Encrypted metadata records (decrypt with sym_key)
+    for em in encrypted_metadata_recs:
+        try:
+            plain = _decrypt_metadata_record(em, bytes(sym_key), file_id)  # type: ignore[arg-type]
+        except ValueError as exc:
+            raise ValueError(f"decrypt metadata record: {exc}") from exc
+        out += write_record(OP_METADATA, plain)
 
     # Attachments
     for log_time, create_time, name, media_type, att_data in attachments:

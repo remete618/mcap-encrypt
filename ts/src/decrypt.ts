@@ -12,11 +12,13 @@ import {
   OP_METADATA,
   OP_ENCRYPTED_CHUNK,
   OP_ENCRYPTED_ATTACHMENT,
+  OP_ENCRYPTED_METADATA,
   readMagic,
   readRecord,
 } from "./record.js";
 import { decodeEncryptedChunk } from "./chunk.js";
 import { decodeEncryptedAttachment, decryptAttachmentData } from "./attachment.js";
+import { decodeEncryptedMetadata, decryptMetadata } from "./metadata.js";
 import {
   ATTACHMENT_NAME,
   ATTACHMENT_MEDIA_TYPE,
@@ -529,7 +531,8 @@ async function* streamMessages(
         break;
       }
       case OP_ENCRYPTED_ATTACHMENT:
-        // Attachments are not messages; iterateMessages intentionally skips them.
+      case OP_ENCRYPTED_METADATA:
+        // Neither attachments nor metadata records are messages; skip.
         break;
       case OP_FOOTER:
         break scan;
@@ -646,6 +649,13 @@ export async function decryptMcap(
         w.writeBytes(plain);
         w.writeUint32(0); // crc = 0
         builder.addRawAttachment(w.toUint8Array());
+        break;
+      }
+      case OP_ENCRYPTED_METADATA: {
+        if (!unwrapped) break; // key not yet found; decoded in second pass below
+        const em = decodeEncryptedMetadata(new Uint8Array(data));
+        const metaPayload = decryptMetadata(em, unwrapped.symKey, unwrapped.fileId);
+        builder.addMetadata(parseMetadata(metaPayload));
         break;
       }
       case OP_FOOTER:
