@@ -42,6 +42,7 @@ Encrypting the whole file is easy. Keeping MCAP tooling useful after encryption 
 - [CLI reference](#cli-reference)
 - [Go library](#go-library)
 - [TypeScript library](#typescript-library)
+- [Python library](#python-library)
 - [Cross-language compatibility](#cross-language-compatibility)
 
 **Features**
@@ -182,7 +183,7 @@ X25519 elliptic-curve Diffie-Hellman offers 128-bit security with 32-byte keys, 
 
 ### Test coverage
 
-The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 6 automated interop tests (RSA and X25519 in both directions, with and without attachments) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation. Key rotation is covered by round-trip, multi-recipient, wrong-key rejection, and atomic-write tests in both Go and TypeScript. The warn callback is verified to fire on malformed key attachment slots and to stay silent on clean decrypts. Current count: **72 Go unit tests**, **69 TypeScript unit tests**, 4 fuzz targets, **8 interop tests**.
+The library includes adversarial tests for ciphertext tampering, chunk swapping, chunk reordering, manifest strip attacks, and encrypted attachment tamper rejection. Four fuzz targets cover the parser surface: `FuzzDecodeEncryptedChunk`, `FuzzDecodeEncryptedAttachment`, `FuzzDecodeWrappedKeyData`, and `FuzzStreamDecrypt`. Cross-language compatibility is verified by 6 automated interop tests (RSA and X25519 in both directions, with and without attachments) run on every CI push. An HKDF test vector pins the X25519 key derivation to the Go reference implementation. Key rotation is covered by round-trip, multi-recipient, wrong-key rejection, and atomic-write tests in both Go and TypeScript. The warn callback is verified to fire on malformed key attachment slots and to stay silent on clean decrypts. Current count: **78 Go unit tests**, **69 TypeScript unit tests**, **31 Python tests** (27 unit + 4 interop), 4 fuzz targets, **8 Go/TypeScript interop tests**.
 
 ### Audit status
 
@@ -264,6 +265,14 @@ npm install mcap-encrypt
 ```
 
 Requires Node.js 18+ (uses the built-in Web Crypto API). Works in modern browsers without polyfills.
+
+### Python
+
+```bash
+pip install mcap-encrypt
+```
+
+Requires Python 3.10+. Installs `cryptography`, `pynacl`, `zstandard`, and `lz4` automatically.
 
 ---
 
@@ -411,6 +420,13 @@ err := mcapencrypt.DecryptWithOptions(r, w, "mykey.priv.pem", mcapencrypt.Decryp
 // Rotate keys without re-encrypting chunk data
 if err := mcapencrypt.RotateKeyFile("encrypted.mcap", "rotated.mcap", "old.priv.pem", []string{"new.pub.pem"}); err != nil { ... }
 
+// Encrypt from any io.Reader, write to any io.Writer (PEM strings, no key files needed)
+err := mcapencrypt.EncryptStream(r, w, []string{pubKeyPem})
+err  = mcapencrypt.EncryptStream(r, w, []string{alicePem, bobPem}) // multi-recipient
+
+// Parse a public key from a PEM string (no file I/O)
+pub, err := mcapencrypt.ParsePublicKeyPEM(pubKeyPem) // *rsa.PublicKey or *ecdh.PublicKey
+
 // Inspect metadata without a private key
 res, err := mcapencrypt.InspectFile("encrypted.mcap")
 // res.IsEncrypted, res.FileID, res.ChunkCount, res.Compression, res.Recipients
@@ -480,21 +496,94 @@ for await (const { schema, channel, message } of iterateMessages(enc, privateKey
 
 ---
 
-## Cross-language compatibility
+## Python library
 
-Keys and encrypted files produced by the Go CLI are fully compatible with the TypeScript library:
+```python
+from mcap_encrypt import (
+    encrypt_mcap, decrypt_mcap, iterate_messages,
+    inspect_mcap, rotate_mcap_keys,
+    generate_key_pair, generate_x25519_key_pair,
+)
+
+# Generate a key pair — RSA-4096 or X25519
+pub_pem, priv_pem = generate_key_pair()              # RSA-4096
+x25519_pub, x25519_priv = generate_x25519_key_pair() # X25519
+
+# Encrypt for a single recipient
+with open("input.mcap", "rb") as f:
+    plain = f.read()
+encrypted = encrypt_mcap(plain, pub_pem)
+with open("encrypted.mcap", "wb") as f:
+    f.write(encrypted)
+
+# Encrypt for multiple recipients; any private key can decrypt
+encrypted2 = encrypt_mcap(plain, [alice_pub_pem, bob_pub_pem])
+
+# Decrypt to a fully-indexed MCAP buffer
+with open("encrypted.mcap", "rb") as f:
+    enc = f.read()
+decrypted = decrypt_mcap(enc, priv_pem)
+with open("output.mcap", "wb") as f:
+    f.write(decrypted)
+
+# Stream messages directly, no intermediate file
+for schema, channel, message in iterate_messages(enc, priv_pem):
+    print(channel.topic, message.log_time)
+
+# Inspect metadata without a private key
+result = inspect_mcap(enc)
+# result.is_encrypted, result.file_id, result.chunk_count, result.compression, result.recipients
+
+# Rotate keys without re-encrypting chunk data
+rotated = rotate_mcap_keys(enc, old_priv_pem, [new_pub_pem])
+```
+
+**Install:**
 
 ```bash
-# Go encrypts, TypeScript decrypts
+pip install mcap-encrypt
+```
+
+Requires Python 3.10+. XChaCha20-Poly1305 is provided by `pynacl` (libsodium), which is compatible with `cryptography>=42`.
+
+**API surface:**
+
+| Export | Signature | Description |
+|---|---|---|
+| `generate_key_pair` | `() -> tuple[str, str]` | Generates RSA-4096 key pair, returns `(pub_pem, priv_pem)`. |
+| `generate_x25519_key_pair` | `() -> tuple[str, str]` | Generates X25519 key pair, returns `(pub_pem, priv_pem)`. |
+| `encrypt_mcap` | `(data: bytes, pub_key_pem: str \| list[str]) -> bytes` | Encrypts a chunked MCAP in memory. Accepts RSA and X25519 public keys; mixed lists are supported. |
+| `decrypt_mcap` | `(data: bytes, priv_key_pem: str) -> bytes` | Decrypts to a fully-indexed MCAP buffer. |
+| `rotate_mcap_keys` | `(data: bytes, old_priv_pem: str, new_pub_pems: list[str]) -> bytes` | Re-wraps the symmetric key for new recipients without decrypting chunk data. |
+| `inspect_mcap` | `(data: bytes) -> InspectResult` | Returns metadata (file_id, chunk count, compression, recipients) without decrypting. No private key required. |
+| `iterate_messages` | `(data: bytes, priv_key_pem: str) -> Iterator[tuple[Schema, Channel, Message]]` | Streams decrypted messages without materializing a full output buffer. |
+
+**Dependencies:** `cryptography>=41`, `pynacl>=1.5` (XChaCha20-Poly1305 via libsodium), `zstandard>=0.19`, `lz4>=4.0`.
+
+**Runtime note:** Server-side only. Requires libsodium (installed automatically via `pynacl`). Does not run in WASM or browser environments.
+
+---
+
+## Cross-language compatibility
+
+Keys and encrypted files produced by any implementation are fully compatible with all others (Go, TypeScript, Python):
+
+```bash
+# Go encrypts, TypeScript or Python decrypts
 mcap-encrypt encrypt --key mykey.pub.pem input.mcap enc.mcap
-# decryptMcap(readFileSync("enc.mcap"), privKeyPem) works
+# TypeScript: decryptMcap(readFileSync("enc.mcap"), privKeyPem)
+# Python:     decrypt_mcap(open("enc.mcap","rb").read(), priv_pem)
 
 # TypeScript encrypts, Go decrypts
 # encryptMcap(data, pubKeyPem) → write to ts-enc.mcap
 mcap-encrypt decrypt --key mykey.priv.pem ts-enc.mcap output.mcap
+
+# Python encrypts, Go decrypts
+# encrypt_mcap(plain, pub_pem) → write to py-enc.mcap
+mcap-encrypt decrypt --key mykey.priv.pem py-enc.mcap output.mcap
 ```
 
-Both implementations agree on:
+All three implementations agree on:
 - XChaCha20-Poly1305 nonce size (24 bytes), key size (32 bytes)
 - AEAD AAD encoding: `file_id` (16 bytes) + `chunk_index` (uint64 LE) + `slot_id` + `compression` + `uncompressed_size` (uint64 LE) + `uncompressed_crc` (uint32 LE) + `message_start_time` (uint64 LE) + `message_end_time` (uint64 LE)
 - RSA-4096-OAEP-SHA-256 key wrapping (RSA recipients)
@@ -504,7 +593,7 @@ Both implementations agree on:
 - Wrapped key attachment format (version `0x03`, 16-byte `file_id`, length-prefixed fields; `0x02` is accepted for legacy read-back)
 - PKCS#8 private key format (PEM label `PRIVATE KEY`) and SPKI public key format (PEM label `PUBLIC KEY`) for both RSA and X25519 keys
 
-Both implementations support **RSA-4096 and X25519 recipients**. Files encrypted with either key type can be encrypted and decrypted by both the Go library and the TypeScript library. Mixed-algorithm recipient lists (RSA + X25519 in the same file) are supported by both.
+All three implementations support **RSA-4096 and X25519 recipients**. Files encrypted with either key type can be encrypted and decrypted by the Go library, the TypeScript library, and the Python library. Mixed-algorithm recipient lists (RSA + X25519 in the same file) are supported by all three.
 
 Cross-language compatibility is verified by automated interop tests run on every CI push.
 
@@ -743,8 +832,6 @@ The following are current constraints, not bugs. The cryptographic core uses sta
 
 ### Roadmap
 
-- Python library.
-- Streaming encrypt API (process files larger than RAM).
 - External security audit (gate for v1.0).
 
 ---
@@ -758,8 +845,6 @@ Issues and PRs welcome at [github.com/remete618/mcap-encrypt](https://github.com
 | # | Task | Difficulty | Issue |
 |---|---|---|---|
 | 1 | Browser smoke test (Vitest browser mode) | medium | [#17](https://github.com/remete618/mcap-encrypt/issues/17) |
-| 2 | Streaming encrypt API | medium | — |
-| 3 | Python library | high | — |
 
 Run tests locally before opening a PR:
 
@@ -769,6 +854,9 @@ go test ./...
 
 # TypeScript
 cd ts && npm test
+
+# Python
+cd py && pip install -e ".[dev]" && pytest
 
 # Cross-language interop (requires Go installed)
 cd ts && npm run test:interop

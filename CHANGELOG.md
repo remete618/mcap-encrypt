@@ -7,6 +7,11 @@ All notable changes to this project are documented here.
 ### Added
 - **`inspect` command (Go and TypeScript)**: `InspectFile`/`Inspect` (Go) and `inspectMcap` (TypeScript) return file metadata — `IsEncrypted`, format version, `FileID`, chunk count, compression, and per-recipient `KeyID`+`KEKAlg` — without decrypting any chunk data. No private key required. CLI: `mcap-encrypt inspect <input.mcap>`. 4 Go tests, 4 TypeScript tests.
 - **Performance benchmarks in README**: `## Performance` section with throughput table (Small/Medium/Large) measured on Apple M3, covering encrypt and decrypt. Reproduce with `go test ./pkg/mcapencrypt/ -bench='BenchmarkEncrypt|BenchmarkDecrypt' -benchtime=5s`.
+- **Streaming encrypt API (Go)**: `EncryptStream(r io.Reader, w io.Writer, pubKeyPems []string, ...)` accepts arbitrary `io.Reader`/`io.Writer` pairs. Input is buffered to a temp file (two-pass encrypt requires seekable input); public-key PEM strings are passed directly without file I/O. `ParsePublicKeyPEM(string) (any, error)` added for in-memory key parsing. 5 new unit tests (round-trip, multi-recipient, wrong-key rejection, re-encrypt guard, empty-key guard).
+- **Python library** (`py/`): `encrypt_mcap`, `decrypt_mcap`, `iterate_messages`, `inspect_mcap`, `rotate_mcap_keys`, `generate_key_pair`, `generate_x25519_key_pair`. XChaCha20-Poly1305 backed by pynacl (libsodium) for `cryptography>=42` compatibility. 4 test modules: roundtrip, inspect, rotate, interop. All 31 Python tests pass; 4 interop tests verify Go-encrypts/Python-decrypts and Python-encrypts/Go-decrypts for both RSA and X25519.
+
+### Fixed
+- **Zero-size chunk skip in decrypt loop (Go)**: `DecryptWithOptions`/`Decrypt` now silently skip `EncryptedChunk` records where `UncompressedSize == 0` instead of forwarding an empty payload to `writeChunkMessages`. AEAD authentication already verified the chunk before the guard triggers. Test added in `guards_test.go` using an in-memory MCAP with a genuinely zero-size encrypted chunk.
 
 ---
 
