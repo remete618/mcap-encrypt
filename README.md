@@ -19,21 +19,42 @@ mcap-encrypt
 
 MCAP is the native format for [Foxglove Studio](https://foxglove.dev/studio) and ROS 2. It has excellent tooling but no built-in encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while keeping schemas, channels, and timestamps readable for routing and inspection without a key.
 
-> **Status:** v0.x, experimental, not externally audited.  
-> **Best for:** MCAP logs at rest; Foxglove Studio visualization via bridge; schemas and channels always accessible.  
-> **Not for:** hiding ROS topic names, schema definitions, or chunk-level timestamps. Those stay readable by design regardless of which encryption level you choose.
+📌 **Status:** v0.x, experimental, not externally audited.  
+✅ **Best for:** MCAP logs at rest; Foxglove Studio visualization via bridge; schemas and channels always accessible.  
+🚫 **Not for:** hiding ROS topic names, schema definitions, or chunk-level timestamps. Those stay readable by design regardless of which encryption level you choose.
 
 ---
 
 ## What it does
 
+<table>
+<tr>
+<td width="160" nowrap><img src="assets/logo-E-golden-key-transparent.svg" width="32" align="absmiddle"> <strong>1 · Encrypt</strong></td>
+<td>Every chunk is encrypted with <strong>XChaCha20-Poly1305</strong>. A fresh random 32-byte key and 24-byte nonce are generated per file and per chunk. Nonce reuse is impossible.</td>
+</tr>
+<tr>
+<td width="160" nowrap><img src="assets/logo-F-key-ribbon-transparent.svg" width="32" align="absmiddle"> <strong>2 · Wrap</strong></td>
+<td>The symmetric key is wrapped separately for each recipient (<strong>RSA-4096</strong> or <strong>X25519</strong>) and stored before the first chunk. Any matching private key decrypts the whole file. Mixed-algorithm recipient lists are supported.</td>
+</tr>
+<tr>
+<td width="160" nowrap><img src="assets/logo-G-heart-lock-transparent.svg" width="32" align="absmiddle"> <strong>3 · Seek</strong></td>
+<td>An unencrypted <strong>ChunkIndex</strong> in the summary section lets any MCAP reader navigate by time range without decrypting. Foxglove Studio shows the recording timeline without a key.</td>
+</tr>
+<tr>
+<td width="160" nowrap><img src="assets/logo-H-pixel-owl-transparent.svg" width="32" align="absmiddle"> <strong>4 · Visualize</strong></td>
+<td>The <strong>bridge</strong> command decrypts to memory and serves over the Foxglove WebSocket protocol. Connect Foxglove Studio exactly as you would to a live ROS 2 robot. No persistent decrypted file remains on disk.</td>
+</tr>
+</table>
+
+### Encryption levels
+
 | Level | CLI flag | Encrypted | Readable without a key |
 |---|---|---|---|
-| Data only | *(default)* | Chunk payloads (sensor data, camera, lidar) | Schemas, channels, timestamps, Metadata records |
-| Data + metadata map | `--metadata encrypt` | Chunk payloads + Metadata key-value pairs | Schemas, channels, timestamps, Metadata names |
-| Data + full metadata | `--metadata encrypt-all` | Chunk payloads + Metadata names + map | Schemas, channels, timestamps only |
+| 1️⃣ Data only | *(default)* | Chunk payloads (sensor data, camera, lidar) | Schemas, channels, timestamps, Metadata records |
+| 2️⃣ Data + metadata map | `--metadata encrypt` | Chunk payloads + Metadata key-value pairs | Schemas, channels, timestamps, Metadata names |
+| 3️⃣ Data + full metadata | `--metadata encrypt-all` | Chunk payloads + Metadata names + map | Schemas, channels, timestamps only |
 
-Each chunk gets its own random 24-byte nonce; nonce reuse is impossible. The symmetric key is wrapped once per recipient (RSA-4096 or X25519) and stored before the first chunk. An unencrypted ChunkIndex in the summary section lets any MCAP reader seek by time range without a key.
+Each chunk gets its own random 24-byte nonce; nonce reuse is impossible. The symmetric key is wrapped once per recipient and stored before the first chunk. An unencrypted ChunkIndex lets any MCAP reader seek by time range without a key.
 
 ---
 
@@ -355,4 +376,4 @@ Test counts: 85+ Go, 80 TypeScript, 37 Python (33 unit + 4 interop), 4 fuzz targ
 
 [MIT](LICENSE).
 
-Radu Cioplea · [radu@cioplea.com](mailto:radu@cioplea.com) · [github.com/remete618](https://github.com/remete618)
+Radu Cioplea · [radu@cioplea.com](mailto:radu@cioplea.com) · [eyepaq.com](https://www.eyepaq.com) · [github.com/remete618](https://github.com/remete618)
