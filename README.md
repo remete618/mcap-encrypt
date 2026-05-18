@@ -46,6 +46,27 @@ MCAP is the native format for [Foxglove Studio](https://foxglove.dev/studio) and
 </tr>
 </table>
 
+### Foxglove Studio bridge
+
+`mcap-encrypt bridge` is built into this project. No separate install, no extra dependency. It works the same way as `foxglove-bridge` for ROS 2 -- start it, connect Studio, done.
+
+```bash
+mcap-encrypt bridge --key mykey.priv.pem recording.mcap
+# listening: ws://localhost:8765
+```
+
+Open Foxglove Studio, add a Foxglove WebSocket connection, enter `ws://localhost:8765`. Camera feeds, lidar, plots, timeline scrubbing -- everything works. The decrypted data stays in RAM on your machine. No persistent decrypted file is written to disk. Nothing reaches Foxglove's servers.
+
+| | `foxglove-bridge` | `mcap-encrypt bridge` |
+|---|---|---|
+| Data source | Live ROS 2 robot | Encrypted MCAP file |
+| Studio connection | `ws://localhost:8765` | `ws://localhost:8765` |
+| Private key required | No | Yes |
+| Decrypted file on disk | n/a | Never |
+| Multiple Studio clients | Yes | Yes |
+
+Full walkthrough and Go API: [docs/foxglove.md](docs/foxglove.md).
+
 ### Encryption levels
 
 | Level | CLI flag | Encrypted | Readable without a key |
