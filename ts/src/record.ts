@@ -12,6 +12,8 @@ export const OP_ATTACHMENT = 0x09;
 export const OP_METADATA = 0x0c;
 export const OP_DATA_END = 0x0f;
 export const OP_ENCRYPTED_CHUNK = 0x81;
+export const OP_ENCRYPTED_ATTACHMENT = 0x82;
+export const OP_ENCRYPTED_METADATA = 0x83;
 
 export function readMagic(r: BinaryReader): void {
   const magic = r.readBytes(8);

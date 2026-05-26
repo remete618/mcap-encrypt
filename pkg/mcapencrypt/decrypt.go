@@ -22,7 +22,64 @@ import (
 // Decryption is single-pass: the wrapped key attachment appears before the first
 // encrypted chunk so each chunk is decrypted immediately as it is read.
 // inputPath and outputPath must differ.
-func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
+// progressReader wraps an io.Reader and calls a progress callback with the
+// cumulative byte count after each Read.
+type progressReader struct {
+	r        io.Reader
+	progress func(int64)
+	count    int64
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.count += int64(n)
+		p.progress(p.count)
+	}
+	return n, err
+}
+
+// DecryptOptions carries optional parameters for DecryptWithOptions.
+type DecryptOptions struct {
+	// WarnFunc is called with a human-readable message whenever a non-fatal
+	// issue is encountered during decryption (e.g. a wrapped-key attachment
+	// that cannot be parsed). If nil, such issues are silently skipped.
+	WarnFunc func(string)
+}
+
+// DecryptWithOptions decrypts an encrypted MCAP stream and writes a standard,
+// indexed MCAP to w. It behaves identically to the file-based Decrypt function
+// but operates on arbitrary io.Reader / io.Writer pairs and accepts DecryptOptions.
+func DecryptWithOptions(r io.Reader, w io.Writer, privateKeyPem string, opts DecryptOptions) error {
+	privKey, err := parsePrivateKeyPEM(privateKeyPem)
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
+	}
+	var unwrap func(kekAlg string, wrappedKey []byte) ([]byte, error)
+	switch k := privKey.(type) {
+	case *rsa.PrivateKey:
+		unwrap = func(kekAlg string, wrappedKey []byte) ([]byte, error) {
+			if kekAlg != "rsa-oaep-sha256" {
+				return nil, fmt.Errorf("private key is RSA but slot uses %q", kekAlg)
+			}
+			return UnwrapSymmetricKey(wrappedKey, k)
+		}
+	case *ecdh.PrivateKey:
+		unwrap = func(kekAlg string, wrappedKey []byte) ([]byte, error) {
+			if kekAlg != "x25519-hkdf-xchacha20poly1305" {
+				return nil, fmt.Errorf("private key is X25519 but slot uses %q", kekAlg)
+			}
+			return UnwrapSymmetricKeyX25519(wrappedKey, k)
+		}
+	default:
+		return fmt.Errorf("unsupported private key type %T", privKey)
+	}
+	return streamDecrypt(r, w, unwrap, opts.WarnFunc)
+}
+
+// Decrypt reads an encrypted MCAP file and writes a standard, indexed MCAP file.
+// The optional progress callback receives cumulative bytes read from the input.
+func Decrypt(inputPath, outputPath, privKeyPath string, progress ...func(int64)) (retErr error) {
 	absIn, err := filepath.Abs(inputPath)
 	if err != nil {
 		return fmt.Errorf("resolve input path: %w", err)
@@ -87,7 +144,11 @@ func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
 		}
 	}()
 
-	if err := streamDecrypt(inFile, tmpFile, unwrap); err != nil {
+	var src io.Reader = inFile
+	if len(progress) > 0 && progress[0] != nil {
+		src = &progressReader{r: inFile, progress: progress[0]}
+	}
+	if err := streamDecrypt(src, tmpFile, unwrap, nil); err != nil {
 		return err
 	}
 	if err := tmpFile.Close(); err != nil {
@@ -105,23 +166,28 @@ func Decrypt(inputPath, outputPath, privKeyPath string) (retErr error) {
 // unwrap receives the kek_algorithm name and wrapped key bytes from each
 // wrapped-key attachment and returns the symmetric key or an error (e.g. wrong
 // key type or failed RSA/X25519 unwrap).
-func streamDecrypt(r io.Reader, w io.Writer, unwrap func(kekAlg string, wrappedKey []byte) ([]byte, error)) error {
+//
+// warnFunc, if non-nil, is called with a human-readable message whenever a
+// non-fatal issue is encountered (e.g. a malformed wrapped-key attachment).
+func streamDecrypt(r io.Reader, w io.Writer, unwrap func(kekAlg string, wrappedKey []byte) ([]byte, error), warnFunc func(string)) error {
 	if err := ReadMagic(r); err != nil {
 		return fmt.Errorf("read magic: %w", err)
 	}
 
 	var (
-		symKey          []byte
-		fileID          []byte
-		chunkIdx        uint64
-		wkaCount        int // number of wrapped-key attachments found
-		inputHdr        *mcap.Header
-		schemas         []*mcap.Schema
-		channels        []*mcap.Channel
-		attachments     []*mcap.Attachment // non-key plaintext attachments to pass through
-		metadataRecs    []*mcap.Metadata   // metadata records to pass through
-		manifestPayload []byte             // raw bytes from the manifest attachment
-		writer          *mcap.Writer
+		symKey           []byte
+		fileID           []byte
+		chunkIdx         uint64
+		wkaCount         int  // number of wrapped-key attachments found
+		manifestRequired bool // true when a v3+ key attachment is seen
+		inputHdr         *mcap.Header
+		schemas          []*mcap.Schema
+		channels         []*mcap.Channel
+		attachments      []*mcap.Attachment   // non-key plaintext attachments to pass through
+		metadataRecs     []*mcap.Metadata     // plaintext metadata records
+		encMetadataRecs  []*EncryptedMetadata // encrypted metadata records (decrypted in finalize)
+		manifestPayload  []byte               // raw bytes from the manifest attachment
+		writer           *mcap.Writer
 	)
 
 	// ensureWriter initialises the McapWriter on first EncryptedChunk, writing
@@ -232,12 +298,19 @@ scan:
 			}
 
 			wkaCount++
-			if symKey != nil {
-				continue // already found a valid key
-			}
 			wkd, decErr := DecodeWrappedKeyData(attData)
 			if decErr != nil {
+				if warnFunc != nil {
+					warnFunc(fmt.Sprintf("wrapped-key attachment #%d could not be parsed: %v", wkaCount, decErr))
+				}
 				continue // malformed attachment; try the next one
+			}
+			// v3+ files always write a manifest; require it on decrypt.
+			if wkd.Version >= wrappedKeyVersion {
+				manifestRequired = true
+			}
+			if symKey != nil {
+				continue // already found a valid key
 			}
 			candidate, unwrapErr := unwrap(wkd.KEKAlg, wkd.WrappedKey)
 			if unwrapErr != nil {
@@ -249,6 +322,38 @@ scan:
 			symKey = candidate
 			defer clear(symKey)
 			fileID = wkd.FileID
+
+		case OpcodeEncryptedAttachment:
+			if symKey == nil {
+				// Key attachment must precede encrypted attachments; skip until key is found.
+				// This mirrors the encrypted-chunk-before-key error path.
+				continue
+			}
+			ea, decErr := DecodeEncryptedAttachment(data)
+			if decErr != nil {
+				return fmt.Errorf("decode encrypted attachment: %w", decErr)
+			}
+			plain, decErr := decryptAttachmentData(ea, symKey, fileID)
+			if decErr != nil {
+				return fmt.Errorf("decrypt attachment %q: %w", ea.Name, decErr)
+			}
+			plainData := make([]byte, len(plain))
+			copy(plainData, plain)
+			attachments = append(attachments, &mcap.Attachment{
+				LogTime:    ea.LogTime,
+				CreateTime: ea.CreateTime,
+				Name:       ea.Name,
+				MediaType:  ea.MediaType,
+				DataSize:   uint64(len(plainData)),
+				Data:       bytes.NewReader(plainData),
+			})
+
+		case OpcodeEncryptedMetadata:
+			em, decErr := DecodeEncryptedMetadata(data)
+			if decErr != nil {
+				return fmt.Errorf("decode encrypted metadata: %w", decErr)
+			}
+			encMetadataRecs = append(encMetadataRecs, em)
 
 		case OpcodeEncryptedChunk:
 			if symKey == nil {
@@ -282,6 +387,12 @@ scan:
 				return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, openErr)
 			}
 			chunkIdx++
+			// Skip chunks that claim to carry no data — AEAD has already
+			// authenticated the zero UncompressedSize, so this is legitimate
+			// and avoids a no-op decompression call.
+			if ec.UncompressedSize == 0 {
+				continue
+			}
 			if parseErr := writeChunkMessages(plaintext, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC, writer); parseErr != nil {
 				return fmt.Errorf("parse decrypted chunk: %w", parseErr)
 			}
@@ -300,8 +411,12 @@ scan:
 		return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file", wkaCount)
 	}
 
-	// Verify the manifest if present. Files written before manifest support was
-	// added will not have one; skip verification for backwards compatibility.
+	// v3+ files always write a manifest. Reject if it was stripped.
+	if manifestRequired && manifestPayload == nil {
+		return fmt.Errorf("manifest attachment missing: file may have been tampered with (strip attack)")
+	}
+
+	// Verify the manifest when present. v2 legacy files may lack one.
 	if manifestPayload != nil {
 		if len(manifestPayload) < manifestPayloadSize {
 			return fmt.Errorf("manifest payload too short (%d bytes, need %d)", len(manifestPayload), manifestPayloadSize)
@@ -315,7 +430,10 @@ scan:
 			return fmt.Errorf("manifest HMAC verification failed: file may be corrupted or tampered")
 		}
 		if storedCount != chunkIdx {
-			return fmt.Errorf("manifest chunk count mismatch: file declares %d chunk(s), decrypted %d (file may be truncated or padded)", storedCount, chunkIdx)
+			if storedCount < chunkIdx {
+				return fmt.Errorf("manifest chunk count mismatch: declared %d chunk(s), found %d (file may have been padded with extra chunks)", storedCount, chunkIdx)
+			}
+			return fmt.Errorf("manifest chunk count mismatch: declared %d chunk(s), found %d (file appears truncated)", storedCount, chunkIdx)
 		}
 	}
 
@@ -330,6 +448,19 @@ scan:
 	for _, m := range metadataRecs {
 		if err := writer.WriteMetadata(m); err != nil {
 			return fmt.Errorf("write metadata %q: %w", m.Name, err)
+		}
+	}
+	for _, em := range encMetadataRecs {
+		plain, decErr := decryptMetadataRecord(em, symKey, fileID)
+		if decErr != nil {
+			return fmt.Errorf("decrypt metadata record: %w", decErr)
+		}
+		m, parseErr := mcap.ParseMetadata(plain)
+		if parseErr != nil {
+			return fmt.Errorf("parse decrypted metadata: %w", parseErr)
+		}
+		if err := writer.WriteMetadata(m); err != nil {
+			return fmt.Errorf("write decrypted metadata %q: %w", m.Name, err)
 		}
 	}
 	return writer.Close()
@@ -376,12 +507,14 @@ func parseAttachmentRecord(data []byte) (name, mediaType string, attData []byte,
 	if o+8 > len(data) {
 		return "", "", nil, fmt.Errorf("truncated before data_size")
 	}
-	dataSize := int(binary.LittleEndian.Uint64(data[o:]))
+	// Keep data_size as uint64: an int() cast can turn a hostile high-bit
+	// value negative, defeating the bounds check and panicking the slice.
+	dataSize := binary.LittleEndian.Uint64(data[o:])
 	o += 8
-	if o+dataSize > len(data) {
+	if dataSize > uint64(len(data)-o) {
 		return "", "", nil, fmt.Errorf("truncated in data field")
 	}
-	attData = data[o : o+dataSize]
+	attData = data[o : o+int(dataSize)]
 	return
 }
 
@@ -411,10 +544,10 @@ func writeChunkMessages(compressed []byte, compression string, expectedSize uint
 		innerOpcode := decompressed[o]
 		length := binary.LittleEndian.Uint64(decompressed[o+1 : o+9])
 		o += 9
-		end := o + int(length)
-		if end < o || end > len(decompressed) {
+		if length > uint64(len(decompressed)-o) {
 			return fmt.Errorf("truncated inner record data at offset %d (need %d bytes)", o, length)
 		}
+		end := o + int(length)
 		if innerOpcode == 0x05 {
 			msg, parseErr := mcap.ParseMessage(decompressed[o:end])
 			if parseErr != nil {

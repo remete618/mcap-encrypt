@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcap-encrypt"
+version = "0.9.0"
+description = "Chunk-level encryption for MCAP robotics data files"
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography>=41.0",
+    "pynacl>=1.5",
+    "zstandard>=0.19",
+    "lz4>=4.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-xdist"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcap_encrypt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

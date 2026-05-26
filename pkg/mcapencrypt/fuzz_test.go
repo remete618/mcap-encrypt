@@ -34,6 +34,28 @@ func FuzzDecodeEncryptedChunk(f *testing.F) {
 	})
 }
 
+// FuzzDecodeEncryptedAttachment verifies the EncryptedAttachment parser does not panic on arbitrary input.
+func FuzzDecodeEncryptedAttachment(f *testing.F) {
+	valid := &EncryptedAttachment{
+		Name:          "config.json",
+		MediaType:     "application/json",
+		LogTime:       1_000_000,
+		CreateTime:    0,
+		Nonce:         make([]byte, 24),
+		EncryptedData: make([]byte, 32),
+	}
+	f.Add(valid.Encode())
+	f.Add([]byte{})
+	f.Add([]byte{0, 0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		ea, err := DecodeEncryptedAttachment(data)
+		if err == nil {
+			_ = ea.Encode()
+		}
+	})
+}
+
 // FuzzDecodeWrappedKeyData verifies the WrappedKeyData parser does not panic on arbitrary input.
 func FuzzDecodeWrappedKeyData(f *testing.F) {
 	validRSA := &WrappedKeyData{
@@ -84,6 +106,6 @@ func FuzzStreamDecrypt(f *testing.F) {
 	f.Add([]byte("not mcap at all"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_ = streamDecrypt(bytes.NewReader(data), io.Discard, unwrap)
+		_ = streamDecrypt(bytes.NewReader(data), io.Discard, unwrap, nil)
 	})
 }

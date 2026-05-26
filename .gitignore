@@ -1,5 +1,11 @@
 /mcap-encrypt
+/dist/
 *.mcap
 *.pem
 ts/dist/
 ts/node_modules/
+node_modules/
+py/**/__pycache__/
+py/**/*.pyc
+py/.venv*/
+py/.pytest_cache/

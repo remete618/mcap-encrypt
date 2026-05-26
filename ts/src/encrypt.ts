@@ -1,7 +1,6 @@
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { BinaryReader, BinaryWriter, safeBigintToNumber } from "./binary.js";
 import {
-  MAGIC,
   OP_HEADER,
   OP_SCHEMA,
   OP_CHANNEL,
@@ -12,14 +11,28 @@ import {
   OP_FOOTER,
   OP_METADATA,
   OP_ENCRYPTED_CHUNK,
+  OP_ENCRYPTED_ATTACHMENT,
+  OP_ENCRYPTED_METADATA,
   readMagic,
   readRecord,
   writeRecord,
   writeMagic,
 } from "./record.js";
+import {
+  encryptMetadata,
+  encodeEncryptedMetadata,
+  type MetadataMode,
+} from "./metadata.js";
 import { encodeEncryptedChunk, type EncryptedChunk } from "./chunk.js";
 import {
+  encryptAttachmentData,
+  encodeEncryptedAttachment,
+  parseAttachmentFields,
+} from "./attachment.js";
+import {
   wrapSymmetricKey,
+  wrapSymmetricKeyX25519,
+  isX25519PublicKeyPem,
   spkiFingerprint,
   encodeWrappedKeyData,
   computeManifestHMAC,
@@ -102,11 +115,21 @@ function encodeAttachment(
   return w.toUint8Array();
 }
 
+export interface EncryptMcapOptions {
+  // metadataMode controls how Metadata records are handled.
+  // "plaintext" (default): pass through unchanged.
+  // "encrypt": encrypt the map; keep the record name readable.
+  // "encrypt-all": encrypt both name and map.
+  metadataMode?: MetadataMode;
+}
+
 export async function encryptMcap(
   input: Uint8Array,
   publicKeyPem: string | string[],
+  options?: EncryptMcapOptions,
 ): Promise<Uint8Array> {
   const pubKeys = Array.isArray(publicKeyPem) ? publicKeyPem : [publicKeyPem];
+  const metadataMode: MetadataMode = options?.metadataMode ?? "plaintext";
   if (pubKeys.length === 0) throw new Error("at least one public key is required");
 
   const symKey = randomBytes(KEY_SIZE);
@@ -116,13 +139,18 @@ export async function encryptMcap(
   // Wrap the symmetric key for each recipient; store as separate attachments.
   const keyAttachments: Uint8Array[] = [];
   for (let i = 0; i < pubKeys.length; i++) {
-    const keyId = await spkiFingerprint(pubKeys[i]!);
-    const wrappedKey = await wrapSymmetricKey(symKey, pubKeys[i]!);
+    const pubPem = pubKeys[i]!;
+    const keyId = await spkiFingerprint(pubPem);
+    const isX25519 = isX25519PublicKeyPem(pubPem);
+    const wrappedKey = isX25519
+      ? await wrapSymmetricKeyX25519(symKey, pubPem)
+      : await wrapSymmetricKey(symKey, pubPem);
     const wkdBytes = encodeWrappedKeyData({
+      version: 3, // v3: manifest required on decrypt
       fileId,
       keyId,
       algorithm: "xchacha20poly1305",
-      kekAlg: "rsa-oaep-sha256",
+      kekAlg: isX25519 ? "x25519-hkdf-xchacha20poly1305" : "rsa-oaep-sha256",
       wrappedKey,
     });
     keyAttachments.push(encodeAttachment(now, 0n, ATTACHMENT_NAME, ATTACHMENT_MEDIA_TYPE, wkdBytes));
@@ -202,22 +230,29 @@ export async function encryptMcap(
       }
 
       case OP_ATTACHMENT: {
-        // Pass non-key attachments through plaintext. Guard against wrapped-key
-        // attachments from previously encrypted files appearing as input.
-        const attReader = new BinaryReader(data);
-        attReader.readUint64(); // log_time
-        attReader.readUint64(); // create_time
-        const attName = attReader.readString();
-        if (attName !== ATTACHMENT_NAME) {
-          flushPending();
-          writeRecord(writer, OP_ATTACHMENT, data);
+        const { name: attName, mediaType: attMediaType, logTime, createTime, attData } =
+          parseAttachmentFields(new Uint8Array(data));
+        // Drop encryption-framework attachments from previously encrypted inputs.
+        if (
+          (attName === ATTACHMENT_NAME && attMediaType === ATTACHMENT_MEDIA_TYPE) ||
+          (attName === MANIFEST_ATTACHMENT_NAME && attMediaType === MANIFEST_ATTACHMENT_MEDIA_TYPE)
+        ) {
+          break;
         }
+        flushPending();
+        const ea = encryptAttachmentData(attData, symKey, fileId, attName, attMediaType, logTime, createTime);
+        writeRecord(writer, OP_ENCRYPTED_ATTACHMENT, encodeEncryptedAttachment(ea));
         break;
       }
 
       case OP_METADATA: {
         flushPending();
-        writeRecord(writer, OP_METADATA, data);
+        if (metadataMode === "encrypt" || metadataMode === "encrypt-all") {
+          const em = encryptMetadata(new Uint8Array(data), symKey, fileId, metadataMode);
+          writeRecord(writer, OP_ENCRYPTED_METADATA, encodeEncryptedMetadata(em));
+        } else {
+          writeRecord(writer, OP_METADATA, data);
+        }
         break;
       }
 
@@ -236,6 +271,14 @@ export async function encryptMcap(
       case OP_FOOTER:
         writeRecord(writer, OP_FOOTER, new Uint8Array(20));
         break outer;
+
+      case OP_ENCRYPTED_CHUNK:
+      case OP_ENCRYPTED_ATTACHMENT:
+      case OP_ENCRYPTED_METADATA:
+        throw new Error(
+          `input is already encrypted (found opcode 0x${opcode.toString(16).padStart(2, "0")}); ` +
+          "decrypt first before re-encrypting",
+        );
 
       case OP_MESSAGE:
         throw new Error(

@@ -21,7 +21,11 @@ import (
 const (
 	AttachmentName      = "mcap_encryption_key"
 	AttachmentMediaType = "application/x-mcap-wrapped-key"
-	wrappedKeyVersion   = byte(2)
+	// wrappedKeyVersion is the current version written by this library.
+	// Version 2 is legacy (no manifest requirement on decrypt).
+	// Version 3 requires a manifest during decryption; without it, decryption fails.
+	wrappedKeyVersion   = byte(3)
+	wrappedKeyVersionV2 = byte(2) // legacy: manifest optional
 	fileIDSize          = 16
 
 	ManifestAttachmentName      = "mcap_encryption_manifest"
@@ -38,6 +42,7 @@ const (
 
 // WrappedKeyData is the binary payload stored inside the WrappedKey Attachment.
 type WrappedKeyData struct {
+	Version    byte   // 2 = legacy (manifest optional); 3 = manifest required
 	FileID     []byte // 16 random bytes, same for every recipient of a given file
 	KeyID      string
 	Algorithm  string // "xchacha20poly1305"
@@ -81,13 +86,14 @@ func DecodeWrappedKeyData(data []byte) (*WrappedKeyData, error) {
 	if len(data) < 1 {
 		return nil, fmt.Errorf("empty wrapped key data")
 	}
-	if data[0] != wrappedKeyVersion {
-		return nil, fmt.Errorf("unsupported wrapped key version %d (want %d)", data[0], wrappedKeyVersion)
+	ver := data[0]
+	if ver != wrappedKeyVersion && ver != wrappedKeyVersionV2 {
+		return nil, fmt.Errorf("unsupported wrapped key version %d (want %d or %d)", ver, wrappedKeyVersionV2, wrappedKeyVersion)
 	}
 	if len(data) < 1+fileIDSize {
 		return nil, fmt.Errorf("truncated: too short for file_id")
 	}
-	k := &WrappedKeyData{}
+	k := &WrappedKeyData{Version: ver}
 	k.FileID = make([]byte, fileIDSize)
 	copy(k.FileID, data[1:1+fileIDSize])
 	o := 1 + fileIDSize
@@ -136,6 +142,14 @@ func DecodeWrappedKeyData(data []byte) (*WrappedKeyData, error) {
 // GenerateKeyPair writes a 4096-bit RSA key pair:
 // basename.priv.pem (0600) and basename.pub.pem (0644).
 func GenerateKeyPair(basename string) error {
+	privPath := basename + ".priv.pem"
+	pubPath := basename + ".pub.pem"
+	if _, err := os.Stat(privPath); err == nil {
+		return fmt.Errorf("key file already exists: %q (delete it first or choose a different basename)", privPath)
+	}
+	if _, err := os.Stat(pubPath); err == nil {
+		return fmt.Errorf("key file already exists: %q (delete it first or choose a different basename)", pubPath)
+	}
 	priv, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
 		return fmt.Errorf("generate RSA key: %w", err)
@@ -144,8 +158,10 @@ func GenerateKeyPair(basename string) error {
 	if err != nil {
 		return fmt.Errorf("marshal private key: %w", err)
 	}
+	defer clear(privDER)
 	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
-	if err := os.WriteFile(basename+".priv.pem", privPEM, 0600); err != nil {
+	defer clear(privPEM)
+	if err := os.WriteFile(privPath, privPEM, 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
 	pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
@@ -153,7 +169,7 @@ func GenerateKeyPair(basename string) error {
 		return fmt.Errorf("marshal public key: %w", err)
 	}
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
-	if err := os.WriteFile(basename+".pub.pem", pubPEM, 0644); err != nil {
+	if err := os.WriteFile(pubPath, pubPEM, 0644); err != nil {
 		return fmt.Errorf("write public key: %w", err)
 	}
 	return nil
@@ -162,6 +178,14 @@ func GenerateKeyPair(basename string) error {
 // GenerateX25519KeyPair writes an X25519 key pair:
 // basename.priv.pem (0600) and basename.pub.pem (0644).
 func GenerateX25519KeyPair(basename string) error {
+	privPath := basename + ".priv.pem"
+	pubPath := basename + ".pub.pem"
+	if _, err := os.Stat(privPath); err == nil {
+		return fmt.Errorf("key file already exists: %q (delete it first or choose a different basename)", privPath)
+	}
+	if _, err := os.Stat(pubPath); err == nil {
+		return fmt.Errorf("key file already exists: %q (delete it first or choose a different basename)", pubPath)
+	}
 	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return fmt.Errorf("generate X25519 key: %w", err)
@@ -170,8 +194,10 @@ func GenerateX25519KeyPair(basename string) error {
 	if err != nil {
 		return fmt.Errorf("marshal private key: %w", err)
 	}
+	defer clear(privDER)
 	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
-	if err := os.WriteFile(basename+".priv.pem", privPEM, 0600); err != nil {
+	defer clear(privPEM)
+	if err := os.WriteFile(privPath, privPEM, 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
 	pubDER, err := x509.MarshalPKIXPublicKey(priv.PublicKey())
@@ -179,7 +205,7 @@ func GenerateX25519KeyPair(basename string) error {
 		return fmt.Errorf("marshal public key: %w", err)
 	}
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
-	if err := os.WriteFile(basename+".pub.pem", pubPEM, 0644); err != nil {
+	if err := os.WriteFile(pubPath, pubPEM, 0644); err != nil {
 		return fmt.Errorf("write public key: %w", err)
 	}
 	return nil
@@ -232,6 +258,25 @@ func LoadPublicKeyAny(path string) (any, error) {
 	}
 }
 
+// ParsePublicKeyPEM parses an RSA or X25519 public key from a PEM-encoded string.
+// Use this when the key is already in memory; use LoadPublicKeyAny when it is on disk.
+func ParsePublicKeyPEM(pemStr string) (any, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in provided key string")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	switch pub.(type) {
+	case *rsa.PublicKey, *ecdh.PublicKey:
+		return pub, nil
+	default:
+		return nil, fmt.Errorf("unsupported public key type %T", pub)
+	}
+}
+
 // LoadPrivateKey loads an RSA private key from a PEM file.
 // Kept for backwards compatibility; new code should use LoadPrivateKeyAny.
 func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
@@ -247,15 +292,18 @@ func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
 }
 
 // LoadPrivateKeyAny loads an RSA or X25519 private key from a PEM file.
+// The raw PEM and DER bytes are zeroed immediately after parsing.
 func LoadPrivateKeyAny(path string) (any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	defer clear(data) // zero PEM text (contains base64 of the key material)
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, fmt.Errorf("no PEM block in %s", path)
 	}
+	defer clear(block.Bytes) // zero DER bytes (raw key material)
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
 		return nil, err
@@ -265,6 +313,28 @@ func LoadPrivateKeyAny(path string) (any, error) {
 		return key, nil
 	default:
 		return nil, fmt.Errorf("%s contains unsupported key type %T", path, key)
+	}
+}
+
+// parsePrivateKeyPEM parses an RSA or X25519 private key from a PEM string.
+// The DER bytes are zeroed immediately after parsing.
+func parsePrivateKeyPEM(pemStr string) (any, error) {
+	data := []byte(pemStr)
+	defer clear(data)
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in provided key string")
+	}
+	defer clear(block.Bytes)
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	switch key.(type) {
+	case *rsa.PrivateKey, *ecdh.PrivateKey:
+		return key, nil
+	default:
+		return nil, fmt.Errorf("unsupported private key type %T", key)
 	}
 }
 
@@ -280,6 +350,12 @@ func UnwrapSymmetricKey(wrapped []byte, priv *rsa.PrivateKey) ([]byte, error) {
 
 // WrapSymmetricKeyX25519 wraps symKey using X25519-HKDF-XChaCha20Poly1305.
 // Output format: ephemeral_pub(32) || nonce(24) || ciphertext(32+16=48) = 104 bytes.
+//
+// This construction is equivalent to HPKE (RFC 9180) with ciphersuite
+// DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20Poly1305 (0x0020).
+// A custom HKDF info label ("mcap-encrypt x25519 v1") is used instead of
+// the HPKE suite_id encoding because golang.org/x/crypto does not yet expose
+// a stable HPKE API; the underlying DH math and AEAD are identical.
 func WrapSymmetricKeyX25519(symKey []byte, recipientPub *ecdh.PublicKey) ([]byte, error) {
 	if recipientPub.Curve() != ecdh.X25519() {
 		return nil, fmt.Errorf("recipient key must use X25519 curve")
@@ -292,6 +368,7 @@ func WrapSymmetricKeyX25519(symKey []byte, recipientPub *ecdh.PublicKey) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("X25519 ECDH: %w", err)
 	}
+	defer clear(shared)
 	kek, err := deriveX25519KEK(shared)
 	if err != nil {
 		return nil, err
@@ -333,6 +410,7 @@ func UnwrapSymmetricKeyX25519(wrapped []byte, priv *ecdh.PrivateKey) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("X25519 ECDH: %w", err)
 	}
+	defer clear(shared)
 	kek, err := deriveX25519KEK(shared)
 	if err != nil {
 		return nil, err

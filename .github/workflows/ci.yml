@@ -13,10 +13,12 @@ jobs:
   go:
     name: Go
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: "go.mod"
           cache: true
@@ -38,7 +40,7 @@ jobs:
         run: go build ./...
 
       - name: Staticcheck
-        uses: dominikh/staticcheck-action@v1
+        uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
         with:
           version: "latest"
 
@@ -50,10 +52,12 @@ jobs:
   typescript:
     name: TypeScript
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "20"
           cache: "npm"
@@ -70,3 +74,51 @@ jobs:
 
       - name: Test
         run: cd ts && npm test
+
+  interop:
+    name: Cross-language interop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ts/package-lock.json
+
+      - name: Install
+        run: cd ts && npm ci
+
+      - name: Build TypeScript
+        run: cd ts && npm run build
+
+      - name: Interop tests (Go ↔ TypeScript)
+        run: cd ts && npm run test:interop
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Fuzz parser surface
+        run: |
+          for t in FuzzDecodeEncryptedChunk FuzzDecodeEncryptedAttachment FuzzDecodeWrappedKeyData FuzzStreamDecrypt; do
+            echo "== $t =="
+            go test -run='^$' -fuzz="^${t}$" -fuzztime=30s ./pkg/mcapencrypt
+          done

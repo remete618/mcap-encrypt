@@ -9,15 +9,25 @@ import (
 const (
 	mcapMagic = "\x89MCAP0\r\n"
 
-	OpcodeEncryptedChunk = byte(0x81)
+	// maxRecordDataSize is a hard cap on any single record payload.
+	// No real MCAP record approaches 4 GiB; values above this indicate
+	// corrupt or adversarial input and must not be passed to make().
+	maxRecordDataSize = 1 << 32
 
-	opcodeHeader   = byte(0x01)
-	opcodeFooter   = byte(0x02)
-	opcodeSchema   = byte(0x03)
-	opcodeChannel  = byte(0x04)
-	opcodeAttach   = byte(0x09)
-	opcodeDataEnd  = byte(0x0F)
-	opcodeMetadata = byte(0x0C)
+	OpcodeEncryptedChunk      = byte(0x81)
+	OpcodeEncryptedAttachment = byte(0x82)
+	OpcodeEncryptedMetadata   = byte(0x83)
+
+	opcodeHeader        = byte(0x01)
+	opcodeFooter        = byte(0x02)
+	opcodeSchema        = byte(0x03)
+	opcodeChannel       = byte(0x04)
+	opcodeChunkIndex    = byte(0x08)
+	opcodeAttach        = byte(0x09)
+	opcodeStatistics    = byte(0x0A)
+	opcodeMetadata      = byte(0x0C)
+	opcodeDataEnd       = byte(0x0F)
+	opcodeSummaryOffset = byte(0x0E)
 )
 
 func ReadMagic(r io.Reader) error {
@@ -45,9 +55,23 @@ func ReadRecord(r io.Reader) (opcode byte, data []byte, err error) {
 	}
 	opcode = hdr[0]
 	length := binary.LittleEndian.Uint64(hdr[1:])
+	if length > maxRecordDataSize {
+		err = fmt.Errorf("record length %d exceeds maximum allowed size (%d bytes)", length, uint64(maxRecordDataSize))
+		return
+	}
 	if length > 0 {
-		data = make([]byte, length)
-		_, err = io.ReadFull(r, data)
+		// Do not pre-allocate the claimed length: a hostile header can
+		// declare up to maxRecordDataSize while supplying far fewer bytes.
+		// LimitReader + ReadAll makes allocation track the bytes actually
+		// present, then we confirm the full record was delivered.
+		data, err = io.ReadAll(io.LimitReader(r, int64(length)))
+		if err != nil {
+			return
+		}
+		if uint64(len(data)) != length {
+			err = fmt.Errorf("record truncated: declared %d bytes, read %d: %w", length, len(data), io.ErrUnexpectedEOF)
+			return
+		}
 	}
 	return
 }
@@ -66,6 +90,3 @@ func WriteRecord(w io.Writer, opcode byte, data []byte) error {
 	}
 	return nil
 }
-
-// emptyFooter is a Footer record payload with SummaryStart=0 (no summary section).
-var emptyFooter = make([]byte, 20)

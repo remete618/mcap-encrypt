@@ -265,6 +265,84 @@ export function buildOversizedChunkMcap(): Uint8Array {
   return w.toUint8Array();
 }
 
+// Builds a chunked MCAP where the single chunk declares compression="lz4".
+// The chunk body bytes are intentionally minimal; encryptMcap rejects LZ4
+// before attempting decompression, so real LZ4 data is not required.
+export function buildTestMcapWithLz4Chunk(): Uint8Array {
+  const w = new BinaryWriter();
+  writeMagic(w);
+  writeRecord(w, 0x01, encodeHeader("test", ""));
+  writeRecord(w, OP_SCHEMA, encodeSchema({ id: 1, name: "s", encoding: "json", data: new Uint8Array(0) }));
+  writeRecord(w, OP_CHANNEL, encodeChannel({ id: 1, schemaId: 1, topic: "/t", messageEncoding: "json", metadata: new Map() }));
+
+  const inner = new BinaryWriter();
+  writeRecord(inner, OP_MESSAGE, encodeMessage({
+    channelId: 1, sequence: 0, logTime: 1_000_000n, publishTime: 1_000_000n,
+    data: new TextEncoder().encode("{}"),
+  }));
+  const innerBytes = inner.toUint8Array();
+
+  const chunkBody = new BinaryWriter();
+  chunkBody.writeUint64(1_000_000n); // message_start_time
+  chunkBody.writeUint64(1_000_000n); // message_end_time
+  chunkBody.writeUint64(BigInt(innerBytes.length)); // uncompressed_size
+  chunkBody.writeUint32(0);          // uncompressed_crc
+  chunkBody.writeString("lz4");      // compression
+  chunkBody.writeUint64(BigInt(innerBytes.length));
+  chunkBody.writeBytes(innerBytes);  // not real LZ4; error fires before decompression
+  writeRecord(w, OP_CHUNK, chunkBody.toUint8Array());
+
+  writeRecord(w, OP_DATA_END, encodeDataEnd());
+  writeRecord(w, OP_FOOTER, encodeFooter());
+  writeMagic(w);
+  return w.toUint8Array();
+}
+
+// Builds a chunked MCAP with `chunkCount` chunks, each containing `msgsPerChunk` messages.
+// Returns the MCAP bytes and the expected flat message list in order.
+export function buildMultiChunkMcap(
+  chunkCount: number,
+  msgsPerChunk: number,
+): { mcap: Uint8Array; messages: Array<{ channelId: number; sequence: number; data: Uint8Array }> } {
+  const w = new BinaryWriter();
+  writeMagic(w);
+  writeRecord(w, 0x01, encodeHeader("test", ""));
+  writeRecord(w, OP_SCHEMA, encodeSchema({ id: 1, name: "s", encoding: "json", data: new Uint8Array(0) }));
+  writeRecord(w, OP_CHANNEL, encodeChannel({ id: 1, schemaId: 1, topic: "/t", messageEncoding: "json", metadata: new Map() }));
+
+  const expectedMessages: Array<{ channelId: number; sequence: number; data: Uint8Array }> = [];
+  let seq = 0;
+  let ts = 1_000_000_000n;
+
+  for (let c = 0; c < chunkCount; c++) {
+    const inner = new BinaryWriter();
+    for (let m = 0; m < msgsPerChunk; m++) {
+      const data = new TextEncoder().encode(`{"chunk":${c},"msg":${m}}`);
+      writeRecord(inner, OP_MESSAGE, encodeMessage({
+        channelId: 1, sequence: seq, logTime: ts, publishTime: ts, data,
+      }));
+      expectedMessages.push({ channelId: 1, sequence: seq, data });
+      seq++;
+      ts += 1_000_000n;
+    }
+    const innerBytes = inner.toUint8Array();
+    const chunkBody = new BinaryWriter();
+    chunkBody.writeUint64(ts - BigInt(msgsPerChunk) * 1_000_000n);
+    chunkBody.writeUint64(ts - 1_000_000n);
+    chunkBody.writeUint64(BigInt(innerBytes.length));
+    chunkBody.writeUint32(0);
+    chunkBody.writeString("");
+    chunkBody.writeUint64(BigInt(innerBytes.length));
+    chunkBody.writeBytes(innerBytes);
+    writeRecord(w, OP_CHUNK, chunkBody.toUint8Array());
+  }
+
+  writeRecord(w, OP_DATA_END, encodeDataEnd());
+  writeRecord(w, OP_FOOTER, encodeFooter());
+  writeMagic(w);
+  return { mcap: w.toUint8Array(), messages: expectedMessages };
+}
+
 export function assertMessagesMatch(got: Message[], expected: Message[]): void {
   if (got.length !== expected.length) {
     throw new Error(`message count mismatch: got ${got.length}, expected ${expected.length}`);

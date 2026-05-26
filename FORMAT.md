@@ -1,19 +1,21 @@
 # mcap-encrypt File Format Specification
 
-Version: **3** (current)
+Version: **6** (current)
 
 ---
 
 ## Overview
 
 An encrypted MCAP file is a valid MCAP file. It uses the standard MCAP container
-(magic bytes, record framing, footer) with three additions:
+(magic bytes, record framing, footer) with five additions:
 
 1. A custom `EncryptedChunk` record (opcode `0x81`) replaces every standard `Chunk`.
-2. One or more `Attachment` records carry the wrapped symmetric key, one per recipient.
-3. One `Attachment` record carries the file manifest (chunk count + HMAC), enabling truncation detection.
+2. A custom `EncryptedAttachment` record (opcode `0x82`) replaces every user `Attachment`.
+3. A custom `EncryptedMetadata` record (opcode `0x83`) optionally replaces `Metadata` records when metadata encryption is requested.
+4. One or more `Attachment` records carry the wrapped symmetric key, one per recipient.
+5. One `Attachment` record carries the file manifest (chunk count + HMAC), enabling truncation detection.
 
-Standard MCAP readers that do not know opcode `0x81` will skip encrypted chunks and
+Standard MCAP readers that do not know opcodes `0x81`, `0x82`, or `0x83` will skip those records and
 see only schemas, channels, and the key attachments in plaintext.
 
 ---
@@ -26,15 +28,31 @@ see only schemas, channels, and the key attachments in plaintext.
 <Schema records>                     opcode 0x03  — one per channel schema
 <Channel records>                    opcode 0x04  — one per topic
 <WrappedKey Attachment records>      opcode 0x09  — one per recipient
-<Manifest Attachment record>         opcode 0x09  — exactly one
 <EncryptedChunk records>             opcode 0x81  — one per original chunk
+<EncryptedAttachment records>        opcode 0x82  — one per user attachment (interleaved with chunks)
+<EncryptedMetadata records>          opcode 0x83  — one per Metadata record (only when metadata mode != plaintext)
+<Manifest Attachment record>         opcode 0x09  — exactly one (position depends on write mode; see below)
 <DataEnd record>                     opcode 0x0F
-<Footer record>                      opcode 0x02  — summary_start = 0 (no summary)
+<Summary section>                    — schemas, channels, Statistics, ChunkIndex records
+<Footer record>                      opcode 0x02  — summary_start points to summary section
 <magic>                              8 bytes
 ```
 
-All wrapped-key and manifest attachments appear **before** the first `EncryptedChunk`
+All wrapped-key attachments appear **before** the first `EncryptedChunk`
 so a decoder can stream-decrypt in a single pass.
+
+**Manifest attachment position** depends on the write mode:
+
+- **Standard (two-pass) mode** — `Encrypt` / `EncryptMulti`: the manifest attachment appears before the first `EncryptedChunk`. The chunk count and HMAC are patched in-place after all chunks are written using `WriteAt` on the seekable output file.
+- **Streaming mode** — `EncryptStream` / `EncryptStreamWithOptions`: the manifest attachment appears after `DataEnd` (but before the summary section). The real chunk count and HMAC are known only after the full input is consumed, so no patch-back is needed.
+
+Decoders scan records until `opcodeFooter` and are not stopped by `DataEnd`, so both positions are found correctly without any changes to the decoder.
+
+The summary section allows seekable access by time range without decryption. Each
+`ChunkIndex` record (opcode `0x08`) points to an `EncryptedChunk` record at
+`chunk_start_offset`. A reader that does not understand opcode `0x81` will seek to
+that offset and skip the unknown record; a reader that does understand it can
+decrypt the specific chunk without scanning from the beginning.
 
 ---
 
@@ -70,6 +88,90 @@ Replaces a standard `Chunk`. Fields are little-endian.
 
 ---
 
+## EncryptedAttachment record (opcode 0x82)
+
+Replaces a user-provided standard `Attachment` (opcode `0x09`). The attachment
+name and media type are stored **in plaintext** so readers can enumerate or filter
+attachments by metadata without needing the private key. Only the attachment data is
+encrypted.
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Attachment name (plaintext) |
+| `media_type` | `string` | Media type (plaintext) |
+| `log_time` | `uint64 LE` | Log timestamp (nanoseconds, plaintext) |
+| `create_time` | `uint64 LE` | Creation timestamp (nanoseconds, plaintext) |
+| `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
+| `encrypted_data` | `bytes` | Ciphertext of the attachment data including the 16-byte Poly1305 tag (4-byte LE length prefix + N bytes) |
+
+### Attachment AAD
+
+The **AEAD additional data** for each attachment is:
+
+```
+file_id       bytes[16]   (no length prefix)
+name          string      4-byte LE length prefix + UTF-8 bytes
+media_type    string      4-byte LE length prefix + UTF-8 bytes
+log_time      uint64 LE
+create_time   uint64 LE
+```
+
+Binding `file_id` prevents transplanting an attachment from one file to another.
+Binding `name`, `media_type`, `log_time`, and `create_time` prevents silent
+renaming or timestamp alteration of the plaintext metadata fields.
+
+---
+
+## EncryptedMetadata record (opcode 0x83)
+
+Optionally replaces a standard `Metadata` record (opcode `0x0C`) when the caller selects
+`encrypt` or `encrypt-all` mode. In the default `plaintext` mode no `0x83` records are written
+and the file is wire-format identical to earlier versions.
+
+Two sub-modes are controlled by the `flags` byte:
+
+| `flags` value | Mode | What is encrypted |
+|---|---|---|
+| `0x00` | `encrypt` | The key-value map only; `name` stored in plaintext |
+| `0x01` | `encrypt-all` | Full `Metadata` payload (name + map) |
+
+### Wire format
+
+| Field | Type | Description |
+|---|---|---|
+| `flags` | `uint8` | `0x00` = encrypt map only; `0x01` = encrypt everything |
+| `name` | `string` | Record name — plaintext when `flags=0x00`, empty string (`\x00\x00\x00\x00`) when `flags=0x01` |
+| `nonce` | `bytes` | 24-byte XChaCha20 nonce (4-byte LE length prefix + 24 bytes) |
+| `encrypted_data` | `bytes` | Ciphertext including the 16-byte Poly1305 authentication tag (4-byte LE length prefix + N bytes) |
+
+`string` encoding: 4-byte LE length prefix followed by UTF-8 bytes.
+`bytes` encoding: 4-byte LE length prefix followed by the raw bytes.
+
+### What is encrypted
+
+- **`flags=0x00`**: The plaintext fed to XChaCha20-Poly1305 is the raw bytes of the key-value map (everything after the name field in the standard `Metadata` payload). On decrypt, the name prefix is re-prepended before handing the record to the MCAP writer.
+- **`flags=0x01`**: The plaintext is the full standard `Metadata` payload (name + map), byte-for-byte identical to the original record `data` field.
+
+### Metadata AAD
+
+The **AEAD additional data** differs by mode:
+
+```
+flags=0x00 (encrypt):
+    file_id   bytes[16]   (no length prefix)
+    name      string      4-byte LE length prefix + UTF-8 bytes
+
+flags=0x01 (encrypt-all):
+    file_id   bytes[16]   (no length prefix)
+```
+
+Binding `file_id` prevents transplanting a record from one file to another.
+Binding `name` in `encrypt` mode prevents renaming the record without breaking authentication.
+Using only `file_id` in `encrypt-all` mode is intentional: the name is inside the ciphertext,
+so it is already protected by the AEAD tag.
+
+---
+
 ## WrappedKey Attachment
 
 Stored as a standard MCAP `Attachment` record (opcode `0x09`) with:
@@ -81,7 +183,7 @@ The `data` field contains a `WrappedKeyData` binary payload:
 
 | Field | Type | Description |
 |---|---|---|
-| `version` | `uint8` | Format version; must be `2` |
+| `version` | `uint8` | Payload version. `3` (current) = manifest required on decrypt. `2` (legacy) = manifest optional. |
 | `file_id` | `bytes[16]` | Random 16-byte file identity, same across all recipients of the same file |
 | `key_id` | `string` | Hex-encoded SHA-256 of the recipient's SPKI public key DER encoding |
 | `algorithm` | `string` | Symmetric cipher; must be `"xchacha20poly1305"` |
@@ -93,7 +195,7 @@ The `data` field contains a `WrappedKeyData` binary payload:
 ### kek_algorithm: `rsa-oaep-sha256`
 
 The 32-byte symmetric key is encrypted with RSA-OAEP-SHA-256.
-`wrapped_key` length: 512 bytes (RSA-4096) or 256 bytes (RSA-2048, legacy).
+`wrapped_key` length: 512 bytes (RSA-4096).
 
 ### kek_algorithm: `x25519-hkdf-xchacha20poly1305`
 
@@ -126,7 +228,9 @@ During decryption:
 2. Verify `expected_hmac == stored_hmac` in constant time. Failure means the manifest was tampered.
 3. Verify `stored_chunk_count == actual_chunks_decrypted`. Mismatch means the file was truncated or padded.
 
-Files written before manifest support was added (format version 2) will not have this attachment; decoders skip verification for backwards compatibility.
+In **standard (two-pass) mode** the manifest appears before the first `EncryptedChunk`. In **streaming mode** it appears after `DataEnd`. Decoders scan all records until `opcodeFooter` and find the manifest regardless of position.
+
+Files with `WrappedKeyData.version == 2` (legacy) may not have this attachment; decoders skip manifest verification for those files only. Files with `version == 3` must have this attachment; decryption fails without it to prevent manifest strip attacks.
 
 ---
 
@@ -172,6 +276,11 @@ XChaCha20-Poly1305 as described in the WrappedKey section above.
 | 1 | Initial format. AAD bound only `message_start_time` and `message_end_time`. No `file_id`. |
 | 2 | AAD expanded to include `file_id`, `chunk_index`, `key_id`, `compression`, `uncompressed_size`, and `uncompressed_crc`. `file_id` added to `WrappedKeyData`. Multi-recipient support. |
 | 3 | `key_id` field in `EncryptedChunk` renamed to `slot_id` (wire value unchanged: `"key-1"`). Added `Manifest Attachment` for truncation detection. Added X25519 key-wrapping algorithm. RSA key size upgraded to 4096 bits. |
+| 4 | Added summary section after `DataEnd`. Footer `summary_start` now points to a real summary containing `Schema`, `Channel`, `Statistics`, `ChunkIndex`, and `SummaryOffset` records. `ChunkIndex` entries point to `EncryptedChunk` records, enabling O(log n) time-range seeking without decryption. |
+| 5 | Added `EncryptedAttachment` record (opcode `0x82`). User attachments are now encrypted; name and media type remain plaintext. Attachment data is protected with XChaCha20-Poly1305 using per-attachment nonces and AAD that binds `file_id`, `name`, `media_type`, `log_time`, and `create_time`. |
+| 6 | Added `EncryptedMetadata` record (opcode `0x83`). When `encrypt` or `encrypt-all` mode is selected, `Metadata` records are replaced by `0x83` records. Default `plaintext` mode is wire-compatible with version 5. |
 
 Version 1 files are rejected by this implementation. Version 2 files decrypt correctly
-(manifest verification is skipped when the manifest attachment is absent). Re-encrypt to upgrade.
+(manifest verification is skipped when the manifest attachment is absent). Version 3
+files decrypt correctly (summary section is absent; decoders fall back to linear scan).
+Version 4 files decrypt correctly. Re-encrypt to upgrade.

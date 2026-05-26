@@ -103,6 +103,40 @@ func TestMixedAlgorithmRecipients(t *testing.T) {
 	}
 }
 
+// TestMultiRecipientOutputConsistency verifies that all recipients of a
+// multi-recipient file recover byte-identical plaintext. A bug in key wrapping
+// that produced different symmetric keys per recipient would pass round-trip tests
+// but fail here.
+func TestMultiRecipientOutputConsistency(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.mcap")
+	encPath := filepath.Join(dir, "enc.mcap")
+	rsaKey := filepath.Join(dir, "rsa")
+	x25519Key := filepath.Join(dir, "x25519")
+
+	buildTestMCAP(t, plainPath)
+	require.NoError(t, mcapencrypt.GenerateKeyPair(rsaKey))
+	require.NoError(t, mcapencrypt.GenerateX25519KeyPair(x25519Key))
+
+	require.NoError(t, mcapencrypt.EncryptMulti(plainPath, encPath, []string{
+		rsaKey + ".pub.pem",
+		x25519Key + ".pub.pem",
+	}))
+
+	decRSA := filepath.Join(dir, "dec-rsa.mcap")
+	decX25519 := filepath.Join(dir, "dec-x25519.mcap")
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decRSA, rsaKey+".priv.pem"))
+	require.NoError(t, mcapencrypt.Decrypt(encPath, decX25519, x25519Key+".priv.pem"))
+
+	rsaMsgs := readAllMessages(t, decRSA)
+	x25519Msgs := readAllMessages(t, decX25519)
+	require.Equal(t, len(rsaMsgs), len(x25519Msgs), "recipient decryptions must yield the same message count")
+	for i := range rsaMsgs {
+		require.Equal(t, rsaMsgs[i].Data, x25519Msgs[i].Data,
+			"message %d payload differs between RSA and X25519 decryption; both must recover identical plaintext", i)
+	}
+}
+
 // TestRSAKeyCannotDecryptX25519File verifies RSA private key fails on X25519-encrypted file.
 func TestRSAKeyCannotDecryptX25519File(t *testing.T) {
 	dir := t.TempDir()
