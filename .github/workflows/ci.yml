@@ -75,6 +75,29 @@ jobs:
       - name: Test
         run: cd ts && npm test
 
+  browser:
+    name: Browser smoke test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ts/package-lock.json
+
+      - name: Install
+        run: cd ts && npm ci
+
+      - name: Install Playwright browsers
+        run: cd ts && npx playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        run: cd ts && npm run test:browser
+
   interop:
     name: Cross-language interop
     runs-on: ubuntu-latest
@@ -102,6 +125,34 @@ jobs:
 
       - name: Interop tests (Go ↔ TypeScript)
         run: cd ts && npm run test:interop
+
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Go binary (enables interop tests)
+        run: go build -o "$HOME/go/bin/mcap-encrypt" ./cmd/mcap-encrypt
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8
+        with:
+          enable-cache: true
+          cache-dependency-glob: "py/uv.lock"
+
+      - name: Test
+        run: cd py && uv sync --extra dev && uv run python -m pytest -v
 
   fuzz:
     name: Fuzz

@@ -1,4 +1,6 @@
-# Contributing
+# Contributing to mcap-encrypt
+
+Thank you for helping improve mcap-encrypt. Issues and pull requests are welcome at [github.com/remete618/mcap-encrypt](https://github.com/remete618/mcap-encrypt).
 
 ## Prerequisites
 
@@ -37,6 +39,9 @@ cd py && uv sync --extra dev && uv run python -m pytest
 
 # Cross-language interop tests (requires Go binary in PATH)
 cd ts && npm run test:interop
+
+# Go fuzzing
+go test -fuzz=FuzzDecodeEncryptedChunk ./pkg/mcapencrypt/
 ```
 
 ## Code style
@@ -44,6 +49,7 @@ cd ts && npm run test:interop
 - Go: `gofmt` is enforced by CI. Run `gofmt -w .` before committing.
 - TypeScript: no linter currently configured; follow the existing style.
 - No new comments unless the *why* is non-obvious.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) prefixes: `fix:`, `feat:`, `test:`, `docs:`, etc.
 
 ## PR checklist
 
@@ -64,3 +70,5 @@ The Go CLI and the npm package are versioned independently:
 ## Security
 
 To report a vulnerability, see [SECURITY.md](.github/SECURITY.md).
+
+The maintainer merges from the `remete618` GitHub account; fork and open PRs as you normally would.

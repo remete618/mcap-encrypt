@@ -88,10 +88,22 @@ Feature-complete for single-user and multi-recipient workflows. Not yet external
 ## Open strategic questions
 
 **Where should this live?**
-Currently under a personal GitHub account (`remete618/mcap-encrypt`). Options: transfer to a Foxglove org repo, spin out as a standalone open-source org, or keep independent.
+Currently under a personal GitHub account (`remete618/mcap-encrypt`). Moving it into the Foxglove org is unlikely: Foxglove would inherit liability for a security-critical library it did not build and has not audited. The realistic options are: contributing it upstream to the `foxglove/mcap` repo (where the original 2022 PR was proposed, closes the loop on that conversation), spinning it out as a dedicated open-source org (neutral, credible home), or keeping it independent under the personal account until v1.0 and an external audit justify the move.
 
 **Should Foxglove adopt it?**
-The bridge already speaks the same WebSocket protocol as `foxglove-bridge`. The npm package already exports `iterateMessages()`. Integration on the Foxglove ingest side requires Foxglove to publish a stable public key and wire up decryption. The library supports this today; the missing piece is on the Foxglove side.
+The bridge already speaks the same WebSocket protocol as `foxglove-bridge`. The npm package already exports `iterateMessages()`. Three integration paths exist, with very different effort and ownership:
+
+| | Path 1 (client-side) | Path 2 (server-side) | Bridge |
+|---|---|---|---|
+| Who does the work | Foxglove frontend eng | Foxglove infra + security | Already done |
+| Where key lives | User's browser session | Foxglove KMS/HSM | User's local machine |
+| Decrypted data goes | Foxglove Studio (browser) | Foxglove cloud pipeline | RAM only, never disk |
+| Foxglove involvement | Yes, 1-2 weeks | Yes, 4-6 weeks | Zero |
+| Works today | No | No | Yes |
+
+The bridge requires zero Foxglove engineering. Path 1 is a Studio UI integration (detect encrypted file, prompt for key, call `iterateMessages()`). Path 2 requires key management infrastructure. The library side is complete for all three paths.
+
+**Current bridge limitation:** decrypts the full file to disk then loads all messages into RAM. Works well for typical recordings under ~5 GB. Streaming decrypt (serve chunks on demand as Studio scrubs the timeline) is on the roadmap but not yet built.
 
 **Should this project continue?**
 The 2022 PR was closed as out of scope. The problem it addresses has not gone away. Robotics teams shipping to defense, healthcare, and automotive increasingly need provable access control on sensor data. This project is the only public implementation of chunk-level MCAP encryption with multi-recipient support and a Foxglove-native bridge.
@@ -100,5 +112,7 @@ The 2022 PR was closed as out of scope. The problem it addresses has not gone aw
 An external audit, conformance vectors, and a stable release tag on all three package registries. Estimated effort: 4 to 6 weeks with one focused engineer.
 
 ---
+
+*Weekend project. Built by someone from marketing. 85+ tests pass, fuzz targets caught three security issues before anyone saw the code. If that's impressive or concerning — depends on your threat model 🥸*
 
 *Built by Radu Marginean. Questions: radu@foxglove.dev or eyepaq.com*
