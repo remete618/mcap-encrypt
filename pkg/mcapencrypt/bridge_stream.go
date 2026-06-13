@@ -2,17 +2,22 @@ package mcapencrypt
 
 import (
 	"container/list"
+	"context"
 	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sync"
 
 	"github.com/foxglove/mcap/go/mcap"
+	"github.com/gorilla/websocket"
 )
 
 // defaultStreamingChunkCacheSize is the number of decrypted chunks the
@@ -402,6 +407,162 @@ func (s *streamingBridgeState) decryptChunkFromDisk(entry chunkIndexEntry) ([]by
 		return nil, fmt.Errorf("chunk %d: uncompressed size mismatch: got %d, want %d", entry.chunkIdx, len(decompressed), ec.UncompressedSize)
 	}
 	return decompressed, nil
+}
+
+// ServeStreamingBridge starts a Foxglove WebSocket bridge that decrypts
+// chunks on demand. Unlike ServeBridge, RAM usage is bounded by the LRU
+// chunk cache rather than the file size.
+func ServeStreamingBridge(ctx context.Context, state *StreamingBridgeState, addr string) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		conn, upgradeErr := wsUpgrader.Upgrade(w, r, nil)
+		if upgradeErr != nil {
+			return
+		}
+		serveWSStreamingClient(conn, state)
+	})
+
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+
+	select {
+	case <-ctx.Done():
+		return srv.Shutdown(context.Background()) //nolint:contextcheck
+	case err := <-errCh:
+		return err
+	}
+}
+
+// StreamingBridge is the on-demand-decrypt counterpart to Bridge. It opens
+// the encrypted MCAP, scans its summary, and serves a Foxglove WebSocket
+// bridge until ctx is done. Chunks are decrypted as Studio requests them.
+func StreamingBridge(ctx context.Context, mcapPath, privKeyPath, addr string) error {
+	state, err := LoadStreamingBridgeState(mcapPath, privKeyPath)
+	if err != nil {
+		return err
+	}
+	defer state.Close()
+	return ServeStreamingBridge(ctx, state, addr)
+}
+
+// serveWSStreamingClient mirrors serveWSClient but is wired to the
+// on-demand decrypt path.
+func serveWSStreamingClient(conn *websocket.Conn, state *streamingBridgeState) {
+	defer conn.Close()
+
+	var mu sync.Mutex
+	sendText := func(v any) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return conn.WriteMessage(websocket.TextMessage, b)
+	}
+	sendBinary := func(b []byte) error {
+		mu.Lock()
+		defer mu.Unlock()
+		return conn.WriteMessage(websocket.BinaryMessage, b)
+	}
+
+	if err := sendText(wsServerInfo{
+		Op:                 "serverInfo",
+		Name:               "mcap-encrypt bridge (streaming)",
+		Capabilities:       []string{},
+		SupportedEncodings: []string{},
+	}); err != nil {
+		return
+	}
+
+	if err := sendText(wsAdvertise{
+		Op:       "advertise",
+		Channels: buildStreamingWSChannels(state),
+	}); err != nil {
+		return
+	}
+
+	subscriptions := map[uint32]uint16{}
+	streaming := false
+
+	for {
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var op struct {
+			Op string `json:"op"`
+		}
+		if err := json.Unmarshal(raw, &op); err != nil {
+			continue
+		}
+		switch op.Op {
+		case "subscribe":
+			var sub wsClientSubscribe
+			if err := json.Unmarshal(raw, &sub); err != nil {
+				continue
+			}
+			for _, s := range sub.Subscriptions {
+				subscriptions[s.ID] = uint16(s.ChannelID)
+			}
+			if !streaming && len(subscriptions) > 0 {
+				streaming = true
+				snapSubs := make(map[uint32]uint16, len(subscriptions))
+				for k, v := range subscriptions {
+					snapSubs[k] = v
+				}
+				go streamWSStreamingMessages(state, snapSubs, sendBinary)
+			}
+		}
+	}
+}
+
+func buildStreamingWSChannels(state *streamingBridgeState) []wsChannel {
+	out := make([]wsChannel, 0, len(state.channels))
+	for _, c := range state.channels {
+		s := state.schemaByID[c.SchemaID]
+		var schemaName, schemaEnc, schema64 string
+		if s != nil {
+			schemaName = s.Name
+			schemaEnc = s.Encoding
+			schema64 = base64.StdEncoding.EncodeToString(s.Data)
+		}
+		out = append(out, wsChannel{
+			ID:             uint32(c.ID),
+			Topic:          c.Topic,
+			Encoding:       c.MessageEncoding,
+			SchemaName:     schemaName,
+			Schema:         schema64,
+			SchemaEncoding: schemaEnc,
+		})
+	}
+	return out
+}
+
+// streamWSStreamingMessages iterates the full time range, decrypting only
+// chunks that contain subscribed-channel messages. Foxglove Studio receives
+// the same ws-protocol MESSAGE_DATA framing as the batch bridge — only the
+// path that produced the bytes is different.
+func streamWSStreamingMessages(state *streamingBridgeState, subscriptions map[uint32]uint16, send func([]byte) error) {
+	chanToSub := make(map[uint16]uint32, len(subscriptions))
+	for subID, chanID := range subscriptions {
+		chanToSub[chanID] = subID
+	}
+	err := state.iterateMessages(0, ^uint64(0), func(msg *mcap.Message) error {
+		subID, ok := chanToSub[msg.ChannelID]
+		if !ok {
+			return nil
+		}
+		frame := make([]byte, 13+len(msg.Data))
+		frame[0] = wsBinaryOpMessageData
+		binary.LittleEndian.PutUint32(frame[1:5], subID)
+		binary.LittleEndian.PutUint64(frame[5:13], msg.LogTime)
+		copy(frame[13:], msg.Data)
+		return send(frame)
+	})
+	_ = err // client may have disconnected; nothing to do
 }
 
 // iterateMessages yields decoded mcap.Message values for chunks whose
