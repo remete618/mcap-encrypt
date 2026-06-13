@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-xdist"]
+dev = ["pytest>=7.0", "pytest-xdist", "hypothesis>=6.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcap_encrypt"]
