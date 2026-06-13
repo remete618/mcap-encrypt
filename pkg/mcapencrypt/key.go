@@ -27,6 +27,8 @@ const (
 	wrappedKeyVersion   = byte(3)
 	wrappedKeyVersionV2 = byte(2) // legacy: manifest optional
 	fileIDSize          = 16
+	// symKeyLen is the XChaCha20-Poly1305 key length in bytes.
+	symKeyLen = 32
 
 	ManifestAttachmentName      = "mcap_encryption_manifest"
 	ManifestAttachmentMediaType = "application/x-mcap-manifest"

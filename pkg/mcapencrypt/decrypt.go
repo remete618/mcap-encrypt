@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/rsa"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/crypto/chacha20poly1305"
 
@@ -175,8 +177,15 @@ func streamDecrypt(r io.Reader, w io.Writer, unwrap func(kekAlg string, wrappedK
 	}
 
 	var (
-		symKey           []byte
-		fileID           []byte
+		// symKey and fileID accumulate via constant-time selection across all
+		// wrapped-key slots: see the opcodeAttach branch below. They are
+		// pre-allocated to fixed length so a constant-time select can populate
+		// them without revealing which slot matched. symKeyFound tracks whether
+		// any slot produced a 32-byte unwrap; it is set in constant time too.
+		symKey           = make([]byte, symKeyLen)
+		fileID           = make([]byte, fileIDSize)
+		symKeyFound      int // 1 once a valid slot has been seen, else 0
+		slotErrs         []string
 		chunkIdx         uint64
 		wkaCount         int  // number of wrapped-key attachments found
 		manifestRequired bool // true when a v3+ key attachment is seen
@@ -189,6 +198,7 @@ func streamDecrypt(r io.Reader, w io.Writer, unwrap func(kekAlg string, wrappedK
 		manifestPayload  []byte               // raw bytes from the manifest attachment
 		writer           *mcap.Writer
 	)
+	defer clear(symKey)
 
 	// ensureWriter initialises the McapWriter on first EncryptedChunk, writing
 	// all buffered schemas and channels before any messages.
@@ -303,28 +313,48 @@ scan:
 				if warnFunc != nil {
 					warnFunc(fmt.Sprintf("wrapped-key attachment #%d could not be parsed: %v", wkaCount, decErr))
 				}
-				continue // malformed attachment; try the next one
+				continue // malformed framing: cannot be tried; record nothing.
 			}
 			// v3+ files always write a manifest; require it on decrypt.
 			if wkd.Version >= wrappedKeyVersion {
 				manifestRequired = true
 			}
-			if symKey != nil {
-				continue // already found a valid key
-			}
+
+			// Constant-time slot trial. Every well-formed slot is unwrapped,
+			// even after a match has been found, so wall-clock timing of the
+			// decrypt does not depend on slot position. Selection of the
+			// matching key uses crypto/subtle to avoid a secret-dependent
+			// branch. See issue #21.
 			candidate, unwrapErr := unwrap(wkd.KEKAlg, wkd.WrappedKey)
+			ok := subtle.ConstantTimeEq(int32(len(candidate)), int32(symKeyLen))
 			if unwrapErr != nil {
-				continue // wrong recipient or key type mismatch; try the next attachment
+				ok = 0
+				slotErrs = append(slotErrs, fmt.Sprintf("slot #%d: %v", wkaCount, unwrapErr))
 			}
-			if len(candidate) != 32 {
-				continue // unexpected sym key length; skip
-			}
-			symKey = candidate
-			defer clear(symKey)
-			fileID = wkd.FileID
+			// Stage candidate and fileID into fixed-size buffers so the
+			// constant-time copy below has length-invariant inputs even when
+			// unwrap returned a nil or short slice. copy() into a fixed-size
+			// array is safe for any source length: it copies min(len) bytes
+			// and leaves the rest at its prior (zero) value.
+			var (
+				candidateBuf [symKeyLen]byte
+				fileIDBuf    [fileIDSize]byte
+			)
+			copy(candidateBuf[:], candidate)
+			// wkd.FileID is parsed from plaintext attachment bytes and is
+			// always 16 bytes on a well-formed slot (DecodeWrappedKeyData
+			// enforces this), but copy is bounded for safety.
+			copy(fileIDBuf[:], wkd.FileID)
+			// Take the first valid slot only: if symKeyFound is already 1,
+			// keep the existing symKey/fileID; else copy the staged buffers
+			// if this slot is ok.
+			take := subtle.ConstantTimeSelect(symKeyFound, 0, ok)
+			ctSelectInto(symKey, candidateBuf[:], take)
+			ctSelectInto(fileID, fileIDBuf[:], take)
+			symKeyFound |= take
 
 		case OpcodeEncryptedAttachment:
-			if symKey == nil {
+			if symKeyFound == 0 {
 				// Key attachment must precede encrypted attachments; skip until key is found.
 				// This mirrors the encrypted-chunk-before-key error path.
 				continue
@@ -356,9 +386,13 @@ scan:
 			encMetadataRecs = append(encMetadataRecs, em)
 
 		case OpcodeEncryptedChunk:
-			if symKey == nil {
+			if symKeyFound == 0 {
 				if wkaCount == 0 {
 					return fmt.Errorf("encountered encrypted chunk before wrapped key attachment")
+				}
+				if len(slotErrs) > 0 {
+					return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file: %s",
+						wkaCount, strings.Join(slotErrs, "; "))
 				}
 				return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file", wkaCount)
 			}
@@ -404,9 +438,13 @@ scan:
 		}
 	}
 
-	if symKey == nil {
+	if symKeyFound == 0 {
 		if wkaCount == 0 {
 			return fmt.Errorf("input is not an encrypted MCAP file (no wrapped key attachment present); only files produced by 'mcap-encrypt encrypt' can be decrypted")
+		}
+		if len(slotErrs) > 0 {
+			return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file: %s",
+				wkaCount, strings.Join(slotErrs, "; "))
 		}
 		return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file", wkaCount)
 	}
@@ -572,5 +610,20 @@ func decompressChunkData(data []byte, compression string) ([]byte, error) {
 		return decompressLz4(data)
 	default:
 		return nil, fmt.Errorf("unsupported compression %q", compression)
+	}
+}
+
+// ctSelectInto overwrites dst with src when take == 1, and leaves dst
+// unchanged when take == 0, using a bitmask so the work and memory access
+// pattern do not depend on take. src must be exactly len(dst) bytes (callers
+// pre-pad short or nil unwrap results into a fixed-size buffer before
+// invoking this helper).
+func ctSelectInto(dst, src []byte, take int) {
+	if len(src) != len(dst) {
+		panic("ctSelectInto: src and dst must have equal length")
+	}
+	mask := byte(-take & 0xFF) // 0xFF when take==1, 0x00 when take==0
+	for i := 0; i < len(dst); i++ {
+		dst[i] = (dst[i] &^ mask) | (src[i] & mask)
 	}
 }
