@@ -69,6 +69,23 @@ On startup the bridge decrypts the entire file into memory and loads all schemas
 
 The private key never leaves your machine. The decrypted content exists only in RAM.
 
+### Streaming mode (`--streaming`)
+
+Pass `--streaming` to switch the bridge to on-demand decryption:
+
+```bash
+mcap-encrypt bridge --key analyst.priv.pem --streaming recording.mcap
+```
+
+In streaming mode the bridge reads the file's summary at load time (schemas, channels, per-chunk time ranges) but does **not** decrypt any chunk bodies. Chunks are decrypted lazily as Studio requests time ranges. A small in-process LRU caches recently used chunks, so RAM use is bounded by the cache size rather than by the file size. The wire protocol is identical to the default bridge, so Foxglove Studio sees no difference. The 5 GiB `MaxBridgeFileSize` sanity cap is still enforced as a conservative bound until concurrent-client stress tests prove it's safe to remove.
+
+When to use which:
+
+| Mode | Best for | Trade-off |
+|---|---|---|
+| default | Files comfortably below your RAM budget; cold-start latency matters | Decrypts every chunk on startup; full file resident in RAM |
+| `--streaming` | Large files or many concurrent bridges per host | Per-subscription decrypt latency; first scrub through a region pays a one-time decompress cost |
+
 ---
 
 ## Using the bridge from Go
