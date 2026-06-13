@@ -99,7 +99,9 @@ mcap-encrypt bridge --key mykey.priv.pem encrypted.mcap
 
 If the output file already exists, `encrypt` and `decrypt` fail. Pass `--force` to overwrite.
 
-**Need a test MCAP?** This repo ships [`examples/sample.mcap`](examples/sample.mcap) (4.7 KB, 100 messages, two channels). Use it as the input above. To regenerate or modify the sample, run `go run ./examples/gen-sample` from the repo root. For larger or real-world recordings, see the [Foxglove MCAP test data](https://github.com/foxglove/mcap/tree/main/tests/conformance/data) or [foxglove.dev/docs/studio/sample-data](https://foxglove.dev/docs/studio/sample-data).
+**Need a test MCAP?** This repo ships [`examples/sample.mcap`](examples/sample.mcap) (4.7 KB, 100 messages, two channels). Use it as the input above. To regenerate or modify the sample, run `go run ./examples/gen-sample` from the repo root.
+
+For Foxglove-blessed test data, the [`foxglove/mcap` conformance suite](https://github.com/foxglove/mcap/tree/main/tests/conformance/data) holds hundreds of structural variants. The files are stored in Git LFS, so clone with `git lfs install && git clone https://github.com/foxglove/mcap` to pull the binaries. For real-world ROS recordings, the [Foxglove documentation](https://docs.foxglove.dev) and the [Foxglove community](https://foxglove.dev/slack) link to public datasets.
 
 ---
 
