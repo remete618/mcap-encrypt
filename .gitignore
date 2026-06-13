@@ -1,6 +1,7 @@
 /mcap-encrypt
 /dist/
 *.mcap
+!examples/sample.mcap
 *.pem
 ts/dist/
 ts/node_modules/
