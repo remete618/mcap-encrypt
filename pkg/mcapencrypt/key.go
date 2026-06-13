@@ -1,7 +1,9 @@
 package mcapencrypt
 
 import (
+	"bytes"
 	"crypto/ecdh"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
@@ -10,12 +12,14 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -236,11 +240,17 @@ func LoadPublicKey(path string) (*rsa.PublicKey, error) {
 	return rsaPub, nil
 }
 
-// LoadPublicKeyAny loads an RSA or X25519 public key from a PEM file.
+// LoadPublicKeyAny loads an RSA or X25519 public key from a PEM file, or an
+// OpenSSH public key (single line starting with "ssh-rsa" or "ssh-ed25519").
+// Ed25519 SSH keys are converted to X25519 internally per RFC 7748 section 5
+// so they can be used with the X25519-HKDF-XChaCha20Poly1305 wrap path.
 func LoadPublicKeyAny(path string) (any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	if isSSHPublicKey(data) {
+		return parseSSHPublicKey(data, path)
 	}
 	block, _ := pem.Decode(data)
 	if block == nil {
@@ -291,7 +301,11 @@ func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
 	return rsaPriv, nil
 }
 
-// LoadPrivateKeyAny loads an RSA or X25519 private key from a PEM file.
+// LoadPrivateKeyAny loads an RSA or X25519 private key from a PEM file, or
+// an OpenSSH private key block ("-----BEGIN OPENSSH PRIVATE KEY-----").
+// Ed25519 SSH keys are converted to X25519 internally per RFC 7748 section 5.
+// Passphrase-protected SSH keys are rejected with a clear error; decrypt the
+// key first with ssh-keygen -p -f <keyfile>.
 // The raw PEM and DER bytes are zeroed immediately after parsing.
 func LoadPrivateKeyAny(path string) (any, error) {
 	data, err := os.ReadFile(path)
@@ -299,6 +313,9 @@ func LoadPrivateKeyAny(path string) (any, error) {
 		return nil, err
 	}
 	defer clear(data) // zero PEM text (contains base64 of the key material)
+	if isSSHPrivateKey(data) {
+		return parseSSHPrivateKey(data, path)
+	}
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, fmt.Errorf("no PEM block in %s", path)
@@ -335,6 +352,95 @@ func parsePrivateKeyPEM(pemStr string) (any, error) {
 		return key, nil
 	default:
 		return nil, fmt.Errorf("unsupported private key type %T", key)
+	}
+}
+
+// isSSHPublicKey reports whether data looks like an OpenSSH authorized-keys
+// line, e.g. "ssh-ed25519 AAAA... user@host" or "ssh-rsa AAAA... user@host".
+// Detection trims leading whitespace and checks for the well-known prefixes.
+func isSSHPublicKey(data []byte) bool {
+	t := bytes.TrimLeft(data, " \t\r\n")
+	return bytes.HasPrefix(t, []byte("ssh-rsa ")) ||
+		bytes.HasPrefix(t, []byte("ssh-ed25519 ")) ||
+		bytes.HasPrefix(t, []byte("ecdsa-sha2-")) ||
+		bytes.HasPrefix(t, []byte("sk-ssh-ed25519@")) ||
+		bytes.HasPrefix(t, []byte("sk-ecdsa-sha2-"))
+}
+
+// isSSHPrivateKey reports whether data looks like an OpenSSH private key
+// block. OpenSSH always uses the literal armor header below regardless of
+// the inner algorithm.
+func isSSHPrivateKey(data []byte) bool {
+	return bytes.Contains(data, []byte("-----BEGIN OPENSSH PRIVATE KEY-----"))
+}
+
+// parseSSHPublicKey parses an authorized-keys-format public key and returns
+// an *rsa.PublicKey or *ecdh.PublicKey suitable for mcap-encrypt's wrap
+// functions. Ed25519 keys are converted to X25519 per RFC 7748 section 5.
+//
+// RSA SSH keys are accepted as-is; the minimum-bits check is enforced later
+// in WrapSymmetricKey, but we surface a clearer error here for the common
+// case of a default 3072-bit ssh-keygen RSA key.
+func parseSSHPublicKey(data []byte, path string) (any, error) {
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse SSH public key %s: %w", path, err)
+	}
+	cryptoPub, ok := pubKey.(ssh.CryptoPublicKey)
+	if !ok {
+		return nil, fmt.Errorf("%s: SSH key type %q does not expose a crypto.PublicKey", path, pubKey.Type())
+	}
+	raw := cryptoPub.CryptoPublicKey()
+	switch k := raw.(type) {
+	case *rsa.PublicKey:
+		if k.N.BitLen() < minRSAKeyBits {
+			return nil, fmt.Errorf("SSH RSA public key in %s is %d bits; minimum is %d bits (regenerate with: ssh-keygen -t rsa -b 4096)", path, k.N.BitLen(), minRSAKeyBits)
+		}
+		return k, nil
+	case ed25519.PublicKey:
+		xPub, err := ed25519SSHKeyToX25519PublicKey(k)
+		if err != nil {
+			return nil, fmt.Errorf("convert Ed25519 SSH key to X25519: %w", err)
+		}
+		return xPub, nil
+	default:
+		return nil, fmt.Errorf("%s: unsupported SSH key algorithm %q (supported: ssh-rsa, ssh-ed25519)", path, pubKey.Type())
+	}
+}
+
+// parseSSHPrivateKey parses an OpenSSH private key block and returns an
+// *rsa.PrivateKey or *ecdh.PrivateKey. Ed25519 keys are converted to X25519
+// per RFC 7748 section 5. Encrypted (passphrase-protected) keys are rejected
+// with a clear error pointing at ssh-keygen -p.
+func parseSSHPrivateKey(data []byte, path string) (any, error) {
+	raw, err := ssh.ParseRawPrivateKey(data)
+	if err != nil {
+		var pmErr *ssh.PassphraseMissingError
+		if errors.As(err, &pmErr) {
+			return nil, fmt.Errorf("SSH private key %s is passphrase-protected; decrypt it first with: ssh-keygen -p -f %s", path, path)
+		}
+		return nil, fmt.Errorf("parse SSH private key %s: %w", path, err)
+	}
+	switch k := raw.(type) {
+	case *rsa.PrivateKey:
+		if k.N.BitLen() < minRSAKeyBits {
+			return nil, fmt.Errorf("SSH RSA private key in %s is %d bits; minimum is %d bits (regenerate with: ssh-keygen -t rsa -b 4096)", path, k.N.BitLen(), minRSAKeyBits)
+		}
+		return k, nil
+	case *ed25519.PrivateKey:
+		xPriv, err := ed25519SSHKeyToX25519PrivateKey(*k)
+		if err != nil {
+			return nil, fmt.Errorf("convert Ed25519 SSH key to X25519: %w", err)
+		}
+		return xPriv, nil
+	case ed25519.PrivateKey:
+		xPriv, err := ed25519SSHKeyToX25519PrivateKey(k)
+		if err != nil {
+			return nil, fmt.Errorf("convert Ed25519 SSH key to X25519: %w", err)
+		}
+		return xPriv, nil
+	default:
+		return nil, fmt.Errorf("%s: unsupported SSH private key type %T (supported: RSA, Ed25519)", path, raw)
 	}
 }
 
