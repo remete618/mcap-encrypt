@@ -338,8 +338,17 @@ func parsePrivateKeyPEM(pemStr string) (any, error) {
 	}
 }
 
-// WrapSymmetricKey wraps symKey using RSA-OAEP-SHA256.
+// minRSAKeyBits is the minimum RSA modulus size accepted for key wrapping.
+// Format v3+ assumes RSA-4096 throughout. Accepting smaller keys would
+// silently weaken the file below documented strength.
+const minRSAKeyBits = 4096
+
+// WrapSymmetricKey wraps symKey using RSA-OAEP-SHA256. Public keys smaller
+// than minRSAKeyBits are rejected.
 func WrapSymmetricKey(symKey []byte, pub *rsa.PublicKey) ([]byte, error) {
+	if pub.N.BitLen() < minRSAKeyBits {
+		return nil, fmt.Errorf("RSA public key is %d bits; minimum is %d bits", pub.N.BitLen(), minRSAKeyBits)
+	}
 	return rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, symKey, nil)
 }
 

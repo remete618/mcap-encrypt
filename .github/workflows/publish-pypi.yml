@@ -1,0 +1,56 @@
+name: Publish PyPI
+
+# Publishes the Python package to PyPI on tag push using PyPI Trusted
+# Publishers (OIDC). Before this workflow can successfully publish, a
+# trusted publisher relationship must be configured on PyPI for this repo
+# and workflow filename. See:
+# https://docs.pypi.org/trusted-publishers/
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mcap-encrypt
+    permissions:
+      contents: read
+      id-token: write  # required for PyPI Trusted Publishers
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Go binary (enables interop tests)
+        run: go build -o "$HOME/go/bin/mcap-encrypt" ./cmd/mcap-encrypt
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8
+        with:
+          enable-cache: true
+          cache-dependency-glob: "py/uv.lock"
+
+      - name: Test
+        run: cd py && uv sync --extra dev && uv run python -m pytest -v
+
+      - name: Build distribution
+        run: cd py && uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@6733eb7d741f0b11ec6a39b58540dab7590f9b7d # v1.14.0
+        with:
+          packages-dir: py/dist

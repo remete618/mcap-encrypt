@@ -291,7 +291,7 @@ func runKeygen(args []string) {
 	if err := mcapencrypt.GenerateKeyPair(*out); err != nil {
 		fatal(err)
 	}
-	fmt.Printf("wrote %s.priv.pem (keep secret) and %s.pub.pem\n", *out, *out)
+	fmt.Printf("wrote %s.priv.pem (mode 0600, keep secret) and %s.pub.pem (mode 0644)\n", *out, *out)
 }
 
 func runEncrypt(args []string) {
@@ -374,6 +374,7 @@ func runDecrypt(args []string) {
 	} else if _, statErr := os.Stat(output); statErr == nil {
 		fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
 	}
+	warnIfInsecureKeyPerms(*key)
 	fmt.Printf("decrypting: %s\n", input)
 
 	inputSize := fileSize(input)
@@ -412,6 +413,7 @@ func runRotate(args []string) {
 	}
 	input, output := fs.Arg(0), fs.Arg(1)
 
+	warnIfInsecureKeyPerms(*oldKey)
 	oldPrivPEM, err := os.ReadFile(*oldKey)
 	if err != nil {
 		fatal(fmt.Errorf("read old private key: %w", err))
@@ -508,6 +510,7 @@ func runBridge(args []string) {
 	}
 	mcapPath := fs.Arg(0)
 
+	warnIfInsecureKeyPerms(*key)
 	fmt.Printf("loading: %s\n", mcapPath)
 	stop := startProgress("decrypting", 0, nil)
 	start := time.Now()
@@ -553,4 +556,13 @@ func fileSize(path string) int64 {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
+}
+
+// warnIfInsecureKeyPerms prints a warning to stderr if the private key file
+// has permissions that allow read access by anyone other than the owner.
+// On Windows the underlying check is a no-op so nothing is printed.
+func warnIfInsecureKeyPerms(path string) {
+	if w := mcapencrypt.CheckPrivateKeyFilePermissions(path); w != "" {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
 }

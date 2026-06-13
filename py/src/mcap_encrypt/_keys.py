@@ -135,8 +135,21 @@ def spki_fingerprint(public_key: RSAPublicKey | X25519PublicKey) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Minimum RSA modulus size accepted for key wrapping. Format v3+ assumes
+# RSA-4096; smaller keys would silently weaken file strength below documented
+# guarantees.
+MIN_RSA_KEY_BITS = 4096
+
+
 def wrap_key_rsa(sym_key: bytes, public_key: RSAPublicKey) -> bytes:
-    """Wrap *sym_key* with RSA-OAEP-SHA256."""
+    """Wrap *sym_key* with RSA-OAEP-SHA256.
+
+    Raises ValueError if the RSA modulus is smaller than MIN_RSA_KEY_BITS.
+    """
+    if public_key.key_size < MIN_RSA_KEY_BITS:
+        raise ValueError(
+            f"RSA public key is {public_key.key_size} bits; minimum is {MIN_RSA_KEY_BITS} bits"
+        )
     return public_key.encrypt(
         sym_key,
         asym_padding.OAEP(

@@ -99,6 +99,8 @@ mcap-encrypt bridge --key mykey.priv.pem encrypted.mcap
 
 If the output file already exists, `encrypt` and `decrypt` fail. Pass `--force` to overwrite.
 
+**Need a test MCAP?** Grab any sample recording from the [Foxglove MCAP test data](https://github.com/foxglove/mcap/tree/main/tests/conformance/data) or download a real ROS 2 example from [foxglove.dev/docs/studio/sample-data](https://foxglove.dev/docs/studio/sample-data). Both work as drop-in inputs for the commands above.
+
 ---
 
 ## Install
@@ -359,8 +361,21 @@ Decrypt is slower because it decompresses and rebuilds a fully-indexed MCAP from
 | `rotate` re-wraps the same DEK; to replace the key itself, decrypt then re-encrypt | `mcap-encrypt decrypt ... && mcap-encrypt encrypt ...` |
 | Input must be a chunked MCAP | Re-encode with chunking enabled (Foxglove CLI and most writers do this by default) |
 | `EncryptStream` spools input to a temp file (two passes); peak RAM is O(1 chunk) but disk usage is proportional to input size | Use file-based `Encrypt`/`EncryptMulti` if temp disk overhead is not acceptable |
-| Bridge loads the decrypted file into memory | Use `decrypt` to produce a standard file and open it in Foxglove Studio directly |
+| Bridge loads the decrypted file into memory; the bridge hard-rejects input files larger than 5 GiB | Use `decrypt` to produce a standard file and open it in Foxglove Studio directly |
 | TypeScript: in-memory only; no LZ4 source support | Use the Go CLI for large files or LZ4 sources |
+
+---
+
+## Troubleshooting
+
+| Message | What it means | What to do |
+|---|---|---|
+| `warning: private key file ... has insecure permissions 0644` | The private key file is readable by others on the system. The CLI continues, but treat the key as compromised. | `chmod 600 mykey.priv.pem` |
+| `private key does not match any of the N recipient key(s) in this file` | The private key you passed was not used at encrypt time. | Use a private key whose matching public key was passed via `--key` during encrypt. |
+| `input is not an encrypted MCAP file (no wrapped key attachment present)` | You ran `decrypt` on a plain MCAP. There is nothing to decrypt. | Open the file directly, or check you meant a different file. |
+| `RSA public key is N bits; minimum is 4096 bits` | The public key you provided is shorter than the format requires. | Use `mcap-encrypt keygen` (which always produces RSA-4096) or generate `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096`. |
+| `input file is X.X GiB which exceeds the bridge limit of 5 GiB` | The bridge loads everything into RAM. Above 5 GiB this is likely to OOM. | Run `decrypt` to write a plaintext MCAP and open it in Foxglove Studio directly. |
+| Lost private key | There is no recovery path. The chunks are encrypted with a symmetric key that only the private key can unwrap. | Restore from a backup, or re-encrypt the original from source if available. Always back up `.priv.pem` files. |
 
 ---
 
@@ -390,7 +405,7 @@ cd py && pip install -e ".[dev]" && pytest             # Python
 cd ts && npm run test:interop                          # cross-language interop
 ```
 
-Test counts: 85+ Go, 80 TypeScript, 37 Python (33 unit + 4 interop), 4 fuzz targets, 8 Go/TypeScript interop tests.
+Test counts: 85+ Go, 83 TypeScript, 43 Python (39 unit + 4 interop), 4 fuzz targets, 8 Go/TypeScript interop tests.
 
 ---
 

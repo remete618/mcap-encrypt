@@ -20,5 +20,19 @@ dev = ["pytest>=7.0", "pytest-xdist"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcap_encrypt"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/mcap_encrypt",
+    "tests",
+    "pyproject.toml",
+    "README.md",
+]
+exclude = [
+    ".venv*",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "uv.lock",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

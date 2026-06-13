@@ -406,7 +406,7 @@ scan:
 
 	if symKey == nil {
 		if wkaCount == 0 {
-			return fmt.Errorf("no wrapped key attachment found: is this an encrypted MCAP file?")
+			return fmt.Errorf("input is not an encrypted MCAP file (no wrapped key attachment present); only files produced by 'mcap-encrypt encrypt' can be decrypted")
 		}
 		return fmt.Errorf("private key does not match any of the %d recipient key(s) in this file", wkaCount)
 	}

@@ -77,14 +77,33 @@ type bridgeState struct {
 // serve over the Foxglove WebSocket protocol. Obtain via LoadBridgeState.
 type BridgeState = bridgeState
 
+// MaxBridgeFileSize is the largest encrypted input the bridge will accept.
+// LoadBridgeState loads every decrypted message into RAM, so files above this
+// limit risk an OOM crash. Run "mcap-encrypt decrypt" first and open the
+// output with a streaming MCAP reader for large recordings.
+const MaxBridgeFileSize int64 = 5 << 30 // 5 GiB
+
 // LoadBridgeState decrypts the encrypted MCAP at mcapPath and loads all
 // schemas, channels, and messages into memory. The intermediate decrypted file
-// is written to a temporary location and removed after loading.
+// is written to a temporary location and removed after loading. Returns an
+// error if the input file is larger than MaxBridgeFileSize.
 func LoadBridgeState(mcapPath, privKeyPath string) (*BridgeState, error) {
 	return loadBridgeState(mcapPath, privKeyPath)
 }
 
 func loadBridgeState(mcapPath, privKeyPath string) (*bridgeState, error) {
+	stat, err := os.Stat(mcapPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat input: %w", err)
+	}
+	if stat.Size() > MaxBridgeFileSize {
+		return nil, fmt.Errorf(
+			"input file is %.1f GiB which exceeds the bridge limit of %d GiB; "+
+				"the bridge loads every message into RAM. Use 'mcap-encrypt decrypt' "+
+				"to write a plaintext MCAP and open it with a streaming reader",
+			float64(stat.Size())/(1<<30), MaxBridgeFileSize>>30)
+	}
+
 	tmp, err := os.CreateTemp("", "mcap-bridge-*.mcap")
 	if err != nil {
 		return nil, fmt.Errorf("create temp file: %w", err)

@@ -87,17 +87,24 @@ export function derToPem(label: string, der: ArrayBuffer): string {
   return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----\n`;
 }
 
-// X25519 SPKI DER header (12 bytes), followed by 32 bytes of raw public key.
-// SEQUENCE { SEQUENCE { OID 1.3.101.110 } BIT_STRING { 0x00 <32 bytes> } }
+// X25519 DER prefixes per RFC 8410 (CFRG Algorithm Identifiers for X25519).
+// These structures are fixed by RFC and cannot change without breaking
+// interoperability with every X25519 implementation (Go, Python, OpenSSL).
+// test/x25519-der.test.ts pins these constants against the spec.
+//
+// SPKI public key (RFC 5280 + RFC 8410 §4):
+//   SEQUENCE { SEQUENCE { OID 1.3.101.110 } BIT_STRING { 0x00 <32 raw bytes> } }
 const X25519_SPKI_HEADER = new Uint8Array([
   0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00,
 ]);
-// X25519 PKCS8 DER header (16 bytes), followed by 32 bytes of raw private key.
-// SEQUENCE { INTEGER 0; SEQUENCE { OID 1.3.101.110 }; OCTET_STRING { OCTET_STRING { <32 bytes> } } }
+// PKCS#8 private key (RFC 5958 + RFC 8410 §7):
+//   SEQUENCE { INTEGER 0; SEQUENCE { OID 1.3.101.110 };
+//              OCTET_STRING { OCTET_STRING { <32 raw bytes> } } }
 const X25519_PKCS8_HEADER = new Uint8Array([
   0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
 ]);
-// X25519 OID bytes used for key type detection in a SPKI DER blob.
+// Raw OID bytes for 1.3.101.110 (id-X25519). Used to detect key type from
+// arbitrary DER without parsing the full structure.
 const X25519_OID = new Uint8Array([0x06, 0x03, 0x2b, 0x65, 0x6e]);
 
 function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
@@ -223,6 +230,11 @@ export async function spkiFingerprint(publicKeyPem: string): Promise<string> {
     .join("");
 }
 
+// Minimum RSA modulus size accepted for key wrapping. Format v3+ assumes
+// RSA-4096; smaller keys would silently weaken file strength below documented
+// guarantees. 512 bytes = 4096 bits when serialized via RSA-OAEP-SHA256.
+const MIN_RSA_KEY_BITS = 4096;
+
 export async function wrapSymmetricKey(symKey: Uint8Array, publicKeyPem: string): Promise<Uint8Array> {
   const der = pemToDer(publicKeyPem);
   const key = await crypto.subtle.importKey(
@@ -232,6 +244,10 @@ export async function wrapSymmetricKey(symKey: Uint8Array, publicKeyPem: string)
     false,
     ["encrypt"],
   );
+  const modulusBits = (key.algorithm as RsaHashedKeyAlgorithm).modulusLength ?? 0;
+  if (modulusBits < MIN_RSA_KEY_BITS) {
+    throw new Error(`RSA public key is ${modulusBits} bits; minimum is ${MIN_RSA_KEY_BITS} bits`);
+  }
   const wrapped = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, key, new Uint8Array(symKey));
   return new Uint8Array(wrapped);
 }
