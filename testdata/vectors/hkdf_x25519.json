@@ -1,0 +1,36 @@
+{
+  "operation": "hkdf-x25519-kek",
+  "spec_section": "FORMAT.md / Key derivation / kek_algorithm: x25519-hkdf-xchacha20poly1305",
+  "algorithm": "HKDF-SHA256",
+  "encoding": "hex",
+  "vectors": [
+    {
+      "description": "Derive 32-byte KEK from a known X25519 shared secret using HKDF-SHA256.",
+      "inputs": {
+        "shared_secret": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+      },
+      "output": "ce1014084924095806930f17a6f6ab8a0d850044bcc09038f6407455ae9ba900",
+      "notes": {
+        "go_reference": "deriveX25519KEK in pkg/mcapencrypt/key.go",
+        "hash": "SHA-256",
+        "info_ascii": "mcap-encrypt x25519 v1",
+        "info_hex": "6d6361702d656e637279707420783235353139207631",
+        "output_len": 32,
+        "salt": "empty (nil)"
+      }
+    },
+    {
+      "description": "Second known-answer test with an all-0xAA shared secret.",
+      "inputs": {
+        "shared_secret": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "output": "fa589fdff67bb6bf4d9af0d5a4ca4d119ccca67db27c02529237bcf211e13a91",
+      "notes": {
+        "hash": "SHA-256",
+        "info_ascii": "mcap-encrypt x25519 v1",
+        "output_len": 32,
+        "salt": "empty (nil)"
+      }
+    }
+  ]
+}

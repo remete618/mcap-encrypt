@@ -1,0 +1,49 @@
+{
+  "operation": "attachment-aad",
+  "spec_section": "FORMAT.md / EncryptedAttachment record / Attachment AAD",
+  "encoding": "hex",
+  "vectors": [
+    {
+      "description": "Typical attachment: ASCII name, image media type, two distinct timestamps.",
+      "inputs": {
+        "create_time_ns": 1699999999000000000,
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "log_time_ns": 1700000000000000000,
+        "media_type": "image/png",
+        "name": "image.png"
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf09000000696d6167652e706e6709000000696d6167652f706e6700002a36fe9c971700368ffafd9c9717",
+      "notes": {
+        "serialization": "file_id(16) || u32 LE len + name utf8 || u32 LE len + media_type utf8 || log_time u64 LE || create_time u64 LE"
+      }
+    },
+    {
+      "description": "Attachment with empty name and empty media type (both length-zero strings).",
+      "inputs": {
+        "create_time_ns": 0,
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "log_time_ns": 0,
+        "media_type": "",
+        "name": ""
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf000000000000000000000000000000000000000000000000",
+      "notes": {
+        "serialization": "file_id(16) || u32 LE len + name utf8 || u32 LE len + media_type utf8 || log_time u64 LE || create_time u64 LE"
+      }
+    },
+    {
+      "description": "Attachment with multibyte UTF-8 name to confirm length prefix is byte count, not codepoint count.",
+      "inputs": {
+        "create_time_ns": 1700000000000000000,
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "log_time_ns": 1700000000000000000,
+        "media_type": "application/pdf",
+        "name": "résumé.pdf"
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0c00000072c3a973756dc3a92e7064660f0000006170706c69636174696f6e2f70646600002a36fe9c971700002a36fe9c9717",
+      "notes": {
+        "serialization": "file_id(16) || u32 LE len + name utf8 || u32 LE len + media_type utf8 || log_time u64 LE || create_time u64 LE"
+      }
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "operation": "chunk-aead",
+  "spec_section": "FORMAT.md / EncryptedChunk record / Authenticated Encryption",
+  "algorithm": "XChaCha20-Poly1305",
+  "encoding": "hex",
+  "vectors": [
+    {
+      "description": "Encrypt a known plaintext as if it were a single zstd-compressed chunk. Implementations: run XChaCha20-Poly1305 Seal with the given key, nonce, plaintext, and aad; the output (ciphertext || 16-byte tag) must equal `ciphertext_hex`.",
+      "inputs": {
+        "aad_fields": {
+          "chunk_index": 0,
+          "compression": "zstd",
+          "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+          "message_end_ns": 2000000000,
+          "message_start_ns": 1000000000,
+          "slot_id": "key-1",
+          "uncompressed_crc": 3405691582,
+          "uncompressed_size": 34
+        },
+        "aad_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0000000000000000050000006b65792d31040000007a7374642200000000000000bebafeca00ca9a3b000000000094357700000000",
+        "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+        "plaintext_hex": "68656c6c6f206d6361702d656e6372797074206368756e6b20706c61696e74657874",
+        "plaintext_utf8": "hello mcap-encrypt chunk plaintext",
+        "sym_key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+      },
+      "output": "cb8bd028e181bfe7c532ecd3af842c596cae56d71d59e24fd47c02cbccabdc9b518fa28c5481a57929ffb201e172afbce72e",
+      "notes": {
+        "algorithm": "XChaCha20-Poly1305",
+        "ciphertext_form": "ciphertext || poly1305_tag (last 16 bytes are the tag)",
+        "nonce_size": 24,
+        "tag_size": 16
+      }
+    }
+  ]
+}

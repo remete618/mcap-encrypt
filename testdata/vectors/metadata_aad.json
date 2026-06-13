@@ -1,0 +1,46 @@
+{
+  "operation": "metadata-aad",
+  "spec_section": "FORMAT.md / EncryptedMetadata record / Metadata AAD",
+  "encoding": "hex",
+  "vectors": [
+    {
+      "description": "encrypt mode (flags=0x00): name is bound into AAD.",
+      "inputs": {
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "flags": 0,
+        "name": "build-info"
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0a0000006275696c642d696e666f",
+      "notes": {
+        "serialization_encrypt": "flags=0x00: file_id(16) || u32 LE len + name utf8",
+        "serialization_encrypt_all": "flags=0x01: file_id(16)  -- name is in ciphertext, not AAD"
+      }
+    },
+    {
+      "description": "encrypt-all mode (flags=0x01): AAD is file_id only, name is inside the ciphertext.",
+      "inputs": {
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "flags": 1,
+        "name": ""
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+      "notes": {
+        "serialization_encrypt": "flags=0x00: file_id(16) || u32 LE len + name utf8",
+        "serialization_encrypt_all": "flags=0x01: file_id(16)  -- name is in ciphertext, not AAD"
+      }
+    },
+    {
+      "description": "encrypt mode with empty name: still emits a length-prefixed empty string.",
+      "inputs": {
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "flags": 0,
+        "name": ""
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf00000000",
+      "notes": {
+        "serialization_encrypt": "flags=0x00: file_id(16) || u32 LE len + name utf8",
+        "serialization_encrypt_all": "flags=0x01: file_id(16)  -- name is in ciphertext, not AAD"
+      }
+    }
+  ]
+}

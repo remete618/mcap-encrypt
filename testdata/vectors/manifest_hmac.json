@@ -1,0 +1,64 @@
+{
+  "operation": "manifest-hmac",
+  "spec_section": "FORMAT.md / Manifest Attachment",
+  "algorithm": "HMAC-SHA-256",
+  "encoding": "hex",
+  "vectors": [
+    {
+      "description": "Single-chunk file.",
+      "inputs": {
+        "chunk_count": 1,
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "sym_key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+      },
+      "output": "d3b8f24e141c23d52d51ebfb68dca826359f366cfb15b3b41520d4e750811bbe",
+      "notes": {
+        "algorithm": "HMAC-SHA-256",
+        "key": "32-byte file symmetric key",
+        "message_layout": "u64 LE chunk_count || file_id(16)"
+      }
+    },
+    {
+      "description": "Zero chunks (schema/channel-only file).",
+      "inputs": {
+        "chunk_count": 0,
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "sym_key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+      },
+      "output": "0d7ba1be5af677ae8ebf77686c16a8aa3884a28c250fc486a62a0d6fa6c7c086",
+      "notes": {
+        "algorithm": "HMAC-SHA-256",
+        "key": "32-byte file symmetric key",
+        "message_layout": "u64 LE chunk_count || file_id(16)"
+      }
+    },
+    {
+      "description": "Many chunks (1024).",
+      "inputs": {
+        "chunk_count": 1024,
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "sym_key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+      },
+      "output": "8b402cee374c750e4cab78f033721495df7292687a8f42159dbdcd4c8be55cd4",
+      "notes": {
+        "algorithm": "HMAC-SHA-256",
+        "key": "32-byte file symmetric key",
+        "message_layout": "u64 LE chunk_count || file_id(16)"
+      }
+    },
+    {
+      "description": "Maximum uint64 chunk count.",
+      "inputs": {
+        "chunk_count": 18446744073709551615,
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "sym_key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+      },
+      "output": "959228cefd19234d69bc93eb55b462145ebcbc6211d61dd023409b49c4d96d84",
+      "notes": {
+        "algorithm": "HMAC-SHA-256",
+        "key": "32-byte file symmetric key",
+        "message_layout": "u64 LE chunk_count || file_id(16)"
+      }
+    }
+  ]
+}
