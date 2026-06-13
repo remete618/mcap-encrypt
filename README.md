@@ -334,6 +334,8 @@ Server-side only. Requires libsodium via `pynacl`. Full API reference: [docs/api
 
 For the full threat model, algorithm rationale, and test coverage details see [SECURITY.md](.github/SECURITY.md).
 
+Release binaries are built reproducibly: a step-by-step recipe to rebuild a published release locally and compare its SHA-256 against the signed `checksums.txt` is in [docs/reproducible-builds.md](docs/reproducible-builds.md).
+
 This project has not been externally audited. Do not use it as the only protection layer for highly sensitive production data without independent review.
 
 ---
