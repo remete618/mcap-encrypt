@@ -101,6 +101,8 @@ mcap-encrypt bridge --key mykey.priv.pem encrypted.mcap
 
 If the output file already exists, `encrypt` and `decrypt` fail. Pass `--force` to overwrite.
 
+**Already have an SSH key?** If `~/.ssh/id_ed25519.pub` exists you can use it directly as a recipient without generating a new key: `mcap-encrypt encrypt --key ~/.ssh/id_ed25519.pub input.mcap encrypted.mcap` and decrypt with `--key ~/.ssh/id_ed25519`. Ed25519 keys are converted to X25519 internally per RFC 7748; RSA SSH keys (`ssh-rsa`) are accepted directly if at least 4096 bits. Passphrase-protected keys are not supported yet; decrypt them first with `ssh-keygen -p -f <keyfile>`.
+
 **Need a test MCAP?** This repo ships [`examples/sample.mcap`](examples/sample.mcap) (4.7 KB, 100 messages, two channels). Use it as the input above. To regenerate or modify the sample, run `go run ./examples/gen-sample` from the repo root.
 
 For Foxglove-blessed test data, the [`foxglove/mcap` conformance suite](https://github.com/foxglove/mcap/tree/main/tests/conformance/data) holds hundreds of structural variants. The files are stored in Git LFS, so clone with `git lfs install && git clone https://github.com/foxglove/mcap` to pull the binaries. For real-world ROS recordings, the [Foxglove documentation](https://docs.foxglove.dev) and the [Foxglove community](https://foxglove.dev/slack) link to public datasets.
