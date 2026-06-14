@@ -613,4 +613,3 @@ func (s *streamingBridgeState) iterateMessages(fromNanos, toNanos uint64, yield 
 	}
 	return nil
 }
-
