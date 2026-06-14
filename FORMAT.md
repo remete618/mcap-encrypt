@@ -269,6 +269,50 @@ XChaCha20-Poly1305 as described in the WrappedKey section above.
 
 ---
 
+## Conformance vectors
+
+Static JSON test vectors live in `testdata/vectors/`. They are the **canonical
+interop reference** for non-Go implementations: a Rust, C, Java, or any other
+port can verify its crypto primitives against these files without running the
+reference Go code.
+
+Each file pins one cryptographic operation in the format:
+
+| File | Operation | What it pins |
+|---|---|---|
+| `hkdf_x25519.json` | HKDF-X25519 KEK derivation | HKDF-SHA-256 with empty salt and the exact `info` string `mcap-encrypt x25519 v1` |
+| `chunk_aad.json` | EncryptedChunk AAD layout | Byte order and field encoding of the chunk AAD |
+| `attachment_aad.json` | EncryptedAttachment AAD layout | Byte order and field encoding of the attachment AAD, including UTF-8 length semantics |
+| `metadata_aad.json` | EncryptedMetadata AAD layout | Both `encrypt` (flags=0x00) and `encrypt-all` (flags=0x01) sub-modes |
+| `manifest_hmac.json` | Manifest HMAC-SHA-256 | `HMAC-SHA-256(sym_key, chunk_count_le8 \|\| file_id)` |
+| `chunk_aead.json` | Chunk XChaCha20-Poly1305 | Encrypt+decrypt with fixed key, nonce, AAD, plaintext |
+| `attachment_aead.json` | Attachment XChaCha20-Poly1305 | Encrypt+decrypt with fixed key, nonce, AAD, plaintext |
+| `metadata_aead.json` | Metadata XChaCha20-Poly1305 | Encrypt+decrypt for both sub-modes |
+
+Each vector entry contains:
+
+- `description` — what the vector covers
+- `inputs` — every input field as hex (or as a literal value for non-bytes)
+- `output` — expected output as hex
+- `notes` — algorithm parameters that aren't bytes (HKDF `info` string, AAD
+  field-order layout, tag size, etc.) so a third-party implementor never has to
+  read Go source to use the vector
+
+The reference Go implementation re-verifies every vector against the live code
+on every test run (`go test ./pkg/mcapencrypt/ -run TestVectors`). Any drift
+between the JSON files and the implementation is a wire-format change and
+fails CI. Vectors are committed to the repository and are not regenerated on
+each test run; intentional changes require a spec version bump and an explicit
+update to the JSON files via `go run ./pkg/mcapencrypt/cmd/gen-vectors`.
+
+Implementations in other languages can verify their crypto primitives by
+passing the vectors in `testdata/vectors/` without running the reference Go
+code: load each JSON, parse hex inputs, run the corresponding primitive
+(HKDF, AAD serializer, HMAC, or AEAD `Seal`), and compare the output hex
+byte-for-byte.
+
+---
+
 ## Version history
 
 | Version | Change |

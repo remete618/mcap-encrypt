@@ -1,0 +1,38 @@
+{
+  "operation": "metadata-aead",
+  "spec_section": "FORMAT.md / EncryptedMetadata record",
+  "algorithm": "XChaCha20-Poly1305",
+  "encoding": "hex",
+  "vectors": [
+    {
+      "description": "Encrypt mode (flags=0x00): plaintext is the map bytes only; AAD binds the plaintext name.",
+      "inputs": {
+        "aad_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0a0000006275696c642d696e666f",
+        "flags": 0,
+        "name": "build-info",
+        "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+        "plaintext_hex": "100000006b65793d76616c75653b666c61673d6f6e",
+        "sym_key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+      },
+      "output": "b3eebc44e5c4abb9d223adc3a4dc384c7dbd4bdb1bd4d652c5e795c2e2e01f93170be0e4f1",
+      "notes": {
+        "plaintext_meaning": "raw bytes of the MCAP Metadata key-value map (everything after the name field in the standard Metadata payload)."
+      }
+    },
+    {
+      "description": "Encrypt-all mode (flags=0x01): plaintext is the full Metadata payload (name length + name + map); AAD = file_id only.",
+      "inputs": {
+        "aad_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "flags": 1,
+        "name": "",
+        "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+        "plaintext_hex": "0a0000006275696c642d696e666f100000006b65793d76616c75653b666c61673d6f6e",
+        "sym_key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+      },
+      "output": "a9eebc44ecd4bbe8c06fa8d8a7884e201cda1dd10c11fa4598790b91c3a9c999149418af85e01feec19fe63bb89c12144a9704",
+      "notes": {
+        "plaintext_meaning": "byte-for-byte identical to the standard MCAP Metadata payload (name length + name utf8 + map bytes)."
+      }
+    }
+  ]
+}
