@@ -1,5 +1,7 @@
 # Security Policy
 
+For a plain-English summary for security buyers, see [Security limitations](../docs/security-limitations.md).
+
 ## Supported versions
 
 Only the latest release on `main` receives security fixes.
@@ -53,7 +55,7 @@ Every encrypted file carries a random 16-byte FileID embedded in each wrapped-ke
 - Version 6 (current): EncryptedMetadata record (opcode 0x83) added. Metadata records are optionally encrypted. Default mode is wire-compatible with version 5.
 
 **Out of scope:**
-- Side-channel and timing attacks. No constant-time guarantees beyond what Go's `crypto/rsa` and `crypto/ecdh` packages provide.
+- Side-channel and timing attacks below the level addressed by Go's `crypto/rsa` and `crypto/ecdh` packages and by the wrapped-key slot trial (see resolved finding INT-2025-004). No nanosecond-resolution constant-time guarantee is claimed; a formal timing audit (e.g. dudect) has not been performed.
 - In-memory key extraction. The PEM/DER buffer is zeroed immediately after parsing; the parsed key struct is managed by the Go runtime and is not zeroed on use.
 - TypeScript key material zeroing. The JavaScript runtime provides no guaranteed memory-wipe primitive; the symmetric key and private key buffers in the TypeScript implementation are not zeroed after use.
 - Compromise of private key files on disk or in transit.
@@ -91,6 +93,20 @@ This library uses standard primitives (XChaCha20-Poly1305, RSA-4096-OAEP-SHA-256
 **Fix:** `ReadRecord` no longer pre-allocates the declared length. It reads via `io.ReadAll(io.LimitReader(r, int64(length)))`, so allocation tracks the bytes actually present, then confirms the full record was delivered or returns a truncation error. Peak RSS for the same fuzz workload dropped to ~190 MiB. The `maxRecordDataSize` cap is retained as a cheap upfront sanity bound.
 
 **Fixed in:** commit `fix: harden input parsing`
+
+### INT-2025-004: wrapped-key slot trial leaked recipient position via decrypt latency
+
+**Component:** `pkg/mcapencrypt/decrypt.go`, function `streamDecrypt` (wrapped-key attachment branch)
+
+**Found by:** Internal review; tracked as issue #21.
+
+**Trigger:** `streamDecrypt` iterated over wrapped-key attachments and called `unwrap()` on each slot, but exited the trial loop on the first success (`if symKey != nil { continue }`) and skipped to the next slot on each failure. An attacker able to observe wall-clock decrypt latency could therefore infer which slot position belonged to a given recipient: matching the first slot returned roughly N times faster than matching the Nth slot in an N-recipient file.
+
+**Impact:** Partial metadata leak. The wrapped-key attachments themselves are public (algorithm and ciphertext are visible to anyone with read access to the file), so the slot count is not secret, but the mapping of slot to recipient was inferable without the private key from latency alone. No confidentiality loss for message data; no authentication bypass.
+
+**Fix:** The slot trial loop now calls `unwrap()` on every well-formed wrapped-key attachment regardless of prior results. The matching symmetric key and FileID are selected via a `crypto/subtle`-based constant-time mask copy (`ctSelectInto`) into pre-allocated fixed-length buffers, so the per-byte work in the slot loop does not depend on which slot matched. A wall-clock smoke test (`TestDecryptSlotTrialConstantTime`) decrypts an 8-recipient file with the matching key in slot 0 versus slot 7 over 200 iterations and asserts the median latency ratio stays below 1.5. Observed ratio with the fix is ~1.00. The test is a smoke test, not a cryptographic constant-time proof; a formal audit would use nanosecond-resolution measurement with statistical tooling such as dudect.
+
+**Fixed in:** commit `fix(decrypt): constant-time wrapped-key slot trial`
 
 ### INT-2025-003: `parseAttachmentRecord` slice-bounds panic via signed cast of attachment `data_size`
 

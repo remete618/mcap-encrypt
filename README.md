@@ -24,6 +24,8 @@ MCAP is the native format for [Foxglove Studio](https://foxglove.dev/studio) and
 ✅ **Best for:** MCAP logs at rest; Foxglove Studio visualization via bridge; schemas and channels always accessible.  
 🚫 **Not for:** hiding ROS topic names, schema definitions, or chunk-level timestamps. Those stay readable by design regardless of which encryption level you choose.
 
+For a plain-English summary for security buyers, see [Security limitations](docs/security-limitations.md).
+
 ---
 
 ## What it does
@@ -99,6 +101,8 @@ mcap-encrypt bridge --key mykey.priv.pem encrypted.mcap
 
 If the output file already exists, `encrypt` and `decrypt` fail. Pass `--force` to overwrite.
 
+**Already have an SSH key?** If `~/.ssh/id_ed25519.pub` exists you can use it directly as a recipient without generating a new key: `mcap-encrypt encrypt --key ~/.ssh/id_ed25519.pub input.mcap encrypted.mcap` and decrypt with `--key ~/.ssh/id_ed25519`. Ed25519 keys are converted to X25519 internally per RFC 7748; RSA SSH keys (`ssh-rsa`) are accepted directly if at least 4096 bits. Passphrase-protected keys are not supported yet; decrypt them first with `ssh-keygen -p -f <keyfile>`.
+
 **Need a test MCAP?** This repo ships [`examples/sample.mcap`](examples/sample.mcap) (4.7 KB, 100 messages, two channels). Use it as the input above. To regenerate or modify the sample, run `go run ./examples/gen-sample` from the repo root.
 
 For Foxglove-blessed test data, the [`foxglove/mcap` conformance suite](https://github.com/foxglove/mcap/tree/main/tests/conformance/data) holds hundreds of structural variants. The files are stored in Git LFS, so clone with `git lfs install && git clone https://github.com/foxglove/mcap` to pull the binaries. For real-world ROS recordings, the [Foxglove documentation](https://docs.foxglove.dev) and the [Foxglove community](https://foxglove.dev/slack) link to public datasets.
@@ -151,7 +155,7 @@ mcap-encrypt encrypt  --key <pub.pem> [--key <pub2.pem>...] [--metadata plaintex
 mcap-encrypt decrypt  (--key <priv.pem> | --kms <uri>) [--force] <input.mcap> <output.mcap>
 mcap-encrypt rotate   (--old-key <priv.pem> | --old-kms <uri>) --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
 mcap-encrypt inspect  <input.mcap>
-mcap-encrypt bridge   (--key <priv.pem> | --kms <uri>) [--addr <host:port>] <encrypted.mcap>
+mcap-encrypt bridge   (--key <priv.pem> | --kms <uri>) [--addr <host:port>] [--streaming] <encrypted.mcap>
 ```
 
 ### keygen
@@ -199,6 +203,8 @@ Prints file metadata (encryption status, format version, file ID, chunk count, r
 ### bridge
 
 Decrypts to memory, serves over the Foxglove WebSocket protocol. Connect Foxglove Studio to `ws://localhost:8765`. No persistent decrypted file on disk. See [docs/foxglove.md](docs/foxglove.md) for the full walkthrough and comparison with `foxglove-bridge`.
+
+Add `--streaming` to decrypt chunks on demand instead of loading the full file. This trades a small per-subscription latency for RAM that is bounded by a fixed-size chunk cache rather than the file size. The on-the-wire ws-protocol is identical; Foxglove Studio sees no difference.
 
 ---
 
@@ -338,6 +344,8 @@ Server-side only. Requires libsodium via `pynacl`. Full API reference: [docs/api
 
 For the full threat model, algorithm rationale, and test coverage details see [SECURITY.md](.github/SECURITY.md).
 
+Release binaries are built reproducibly: a step-by-step recipe to rebuild a published release locally and compare its SHA-256 against the signed `checksums.txt` is in [docs/reproducible-builds.md](docs/reproducible-builds.md).
+
 This project has not been externally audited. Do not use it as the only protection layer for highly sensitive production data without independent review.
 
 ---
@@ -367,7 +375,7 @@ Decrypt is slower because it decompresses and rebuilds a fully-indexed MCAP from
 | `rotate` re-wraps the same DEK; to replace the key itself, decrypt then re-encrypt | `mcap-encrypt decrypt ... && mcap-encrypt encrypt ...` |
 | Input must be a chunked MCAP | Re-encode with chunking enabled (Foxglove CLI and most writers do this by default) |
 | `EncryptStream` spools input to a temp file (two passes); peak RAM is O(1 chunk) but disk usage is proportional to input size | Use file-based `Encrypt`/`EncryptMulti` if temp disk overhead is not acceptable |
-| Bridge loads the decrypted file into memory; the bridge hard-rejects input files larger than 5 GiB | Use `decrypt` to produce a standard file and open it in Foxglove Studio directly |
+| Bridge (default mode) loads the decrypted file into memory; the bridge hard-rejects input files larger than 5 GiB | Pass `--streaming` to decrypt chunks on demand (lower RAM, bounded by an in-process LRU cache), or use `decrypt` to write a plaintext MCAP and open it in Foxglove Studio directly |
 | TypeScript: in-memory only; no LZ4 source support | Use the Go CLI for large files or LZ4 sources |
 
 ---

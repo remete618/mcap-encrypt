@@ -1,0 +1,58 @@
+{
+  "operation": "chunk-aad",
+  "spec_section": "FORMAT.md / Authenticated Encryption / chunk AAD",
+  "encoding": "hex",
+  "vectors": [
+    {
+      "description": "First chunk: zstd compression, non-empty plaintext, sample CRC and times.",
+      "inputs": {
+        "chunk_index": 0,
+        "compression": "zstd",
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "message_end_ns": 2000000000,
+        "message_start_ns": 1000000000,
+        "slot_id": "key-1",
+        "uncompressed_crc": 3735928559,
+        "uncompressed_size": 12345
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0000000000000000050000006b65792d31040000007a7374643930000000000000efbeadde00ca9a3b000000000094357700000000",
+      "notes": {
+        "serialization": "file_id(16) || chunk_index u64 LE || u32 LE len + slot_id utf8 || u32 LE len + compression utf8 || uncompressed_size u64 LE || uncompressed_crc u32 LE || message_start u64 LE || message_end u64 LE"
+      }
+    },
+    {
+      "description": "Second chunk: empty compression string, larger index and times.",
+      "inputs": {
+        "chunk_index": 1,
+        "compression": "",
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "message_end_ns": 0,
+        "message_start_ns": 0,
+        "slot_id": "key-1",
+        "uncompressed_crc": 0,
+        "uncompressed_size": 0
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0100000000000000050000006b65792d310000000000000000000000000000000000000000000000000000000000000000",
+      "notes": {
+        "serialization": "file_id(16) || chunk_index u64 LE || u32 LE len + slot_id utf8 || u32 LE len + compression utf8 || uncompressed_size u64 LE || uncompressed_crc u32 LE || message_start u64 LE || message_end u64 LE"
+      }
+    },
+    {
+      "description": "Chunk with max uint values to test field widths.",
+      "inputs": {
+        "chunk_index": 18446744073709551615,
+        "compression": "zstd",
+        "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+        "message_end_ns": 18446744073709551615,
+        "message_start_ns": 18446744073709551615,
+        "slot_id": "key-1",
+        "uncompressed_crc": 4294967295,
+        "uncompressed_size": 18446744073709551615
+      },
+      "output": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafffffffffffffffff050000006b65792d31040000007a737464ffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "notes": {
+        "serialization": "file_id(16) || chunk_index u64 LE || u32 LE len + slot_id utf8 || u32 LE len + compression utf8 || uncompressed_size u64 LE || uncompressed_crc u32 LE || message_start u64 LE || message_end u64 LE"
+      }
+    }
+  ]
+}

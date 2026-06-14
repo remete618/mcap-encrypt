@@ -1,0 +1,30 @@
+{
+  "operation": "attachment-aead",
+  "spec_section": "FORMAT.md / EncryptedAttachment record",
+  "algorithm": "XChaCha20-Poly1305",
+  "encoding": "hex",
+  "vectors": [
+    {
+      "description": "Encrypt an attachment payload with the AAD bound to its plaintext metadata.",
+      "inputs": {
+        "aad_fields": {
+          "create_time_ns": 1699999999000000000,
+          "file_id_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+          "log_time_ns": 1700000000000000000,
+          "media_type": "image/png",
+          "name": "image.png"
+        },
+        "aad_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf09000000696d6167652e706e6709000000696d6167652f706e6700002a36fe9c971700368ffafd9c9717",
+        "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
+        "plaintext_hex": "6174746163686d656e74207061796c6f6164206279746573",
+        "sym_key_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
+      },
+      "output": "c29ac825edc9bfe1ca36e1c6a09e324f7dbe56d60c58e957db4b19b387da5e3c0f84962419166f7c",
+      "notes": {
+        "algorithm": "XChaCha20-Poly1305",
+        "nonce_size": 24,
+        "tag_size": 16
+      }
+    }
+  ]
+}

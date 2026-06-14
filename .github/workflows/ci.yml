@@ -154,6 +154,14 @@ jobs:
       - name: Test
         run: cd py && uv sync --extra dev && uv run python -m pytest -v
 
+      - name: Fuzz parser surface (Hypothesis)
+        # Hypothesis tests already run as part of the main pytest step above.
+        # Re-running them explicitly under a higher example budget gives a
+        # dedicated fuzz signal and parity with the Go fuzz job. Time-boxed
+        # so a runaway never blocks CI.
+        timeout-minutes: 3
+        run: cd py && uv run python -m pytest tests/test_fuzz.py -v --hypothesis-seed=0
+
   fuzz:
     name: Fuzz
     runs-on: ubuntu-latest
