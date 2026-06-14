@@ -1,5 +1,7 @@
 # Security Policy
 
+For a plain-English summary for security buyers, see [Security limitations](../docs/security-limitations.md).
+
 ## Supported versions
 
 Only the latest release on `main` receives security fixes.
