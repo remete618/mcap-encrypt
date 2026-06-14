@@ -19,7 +19,7 @@
     "build": "tsc --project tsconfig.build.json",
     "test": "vitest run --exclude test/browser.test.ts",
     "test:interop": "vitest run test/interop.test.ts",
-    "test:browser": "vitest run --browser.enabled --browser.provider=playwright --browser.name=chromium --browser.headless test/browser.test.ts",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
     "typecheck": "tsc --noEmit",
     "prepack": "cp ../README.md README.md",
     "postpack": "rm -f README.md",
@@ -48,6 +48,7 @@
   "devDependencies": {
     "@types/node": "^25.8.0",
     "@vitest/browser": "^4.1.7",
+    "@vitest/browser-playwright": "^4.1.8",
     "playwright": "^1.60.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.6"
