@@ -403,22 +403,9 @@ scan:
 			if decErr != nil {
 				return fmt.Errorf("decode encrypted chunk: %w", decErr)
 			}
-			if len(ec.Nonce) != chacha20poly1305.NonceSizeX {
-				return fmt.Errorf("chunk [%d–%d]: nonce length %d invalid (want %d)",
-					ec.MessageStartTime, ec.MessageEndTime, len(ec.Nonce), chacha20poly1305.NonceSizeX)
-			}
-			if len(ec.EncryptedData) < 16 {
-				return fmt.Errorf("chunk [%d–%d]: ciphertext too short (%d bytes, minimum 16)",
-					ec.MessageStartTime, ec.MessageEndTime, len(ec.EncryptedData))
-			}
-			aead, cipherErr := chacha20poly1305.NewX(symKey)
-			if cipherErr != nil {
-				return fmt.Errorf("create cipher: %w", cipherErr)
-			}
-			aad := chunkAAD(fileID, chunkIdx, ec.SlotID, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC, ec.MessageStartTime, ec.MessageEndTime)
-			plaintext, openErr := aead.Open(nil, ec.Nonce, ec.EncryptedData, aad)
-			if openErr != nil {
-				return fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, openErr)
+			plaintext, decErr := decryptSingleChunk(ec, symKey, fileID, chunkIdx)
+			if decErr != nil {
+				return decErr
 			}
 			chunkIdx++
 			// Skip chunks that claim to carry no data — AEAD has already
@@ -598,6 +585,33 @@ func writeChunkMessages(compressed []byte, compression string, expectedSize uint
 		o = end
 	}
 	return nil
+}
+
+// decryptSingleChunk validates one EncryptedChunk and returns its plaintext
+// (still compressed). The chunkIdx must match the chunk's position in the
+// file's encryption sequence: it is bound into the AEAD additional data, so a
+// wrong index causes Open to fail. Callers that already hold a decoded
+// EncryptedChunk (e.g. the streaming bridge) reuse this helper to avoid
+// duplicating the AEAD wiring from streamDecrypt.
+func decryptSingleChunk(ec *EncryptedChunk, symKey, fileID []byte, chunkIdx uint64) ([]byte, error) {
+	if len(ec.Nonce) != chacha20poly1305.NonceSizeX {
+		return nil, fmt.Errorf("chunk [%d–%d]: nonce length %d invalid (want %d)",
+			ec.MessageStartTime, ec.MessageEndTime, len(ec.Nonce), chacha20poly1305.NonceSizeX)
+	}
+	if len(ec.EncryptedData) < 16 {
+		return nil, fmt.Errorf("chunk [%d–%d]: ciphertext too short (%d bytes, minimum 16)",
+			ec.MessageStartTime, ec.MessageEndTime, len(ec.EncryptedData))
+	}
+	aead, cipherErr := chacha20poly1305.NewX(symKey)
+	if cipherErr != nil {
+		return nil, fmt.Errorf("create cipher: %w", cipherErr)
+	}
+	aad := chunkAAD(fileID, chunkIdx, ec.SlotID, ec.Compression, ec.UncompressedSize, ec.UncompressedCRC, ec.MessageStartTime, ec.MessageEndTime)
+	plaintext, openErr := aead.Open(nil, ec.Nonce, ec.EncryptedData, aad)
+	if openErr != nil {
+		return nil, fmt.Errorf("decrypt chunk [%d–%d]: %w", ec.MessageStartTime, ec.MessageEndTime, openErr)
+	}
+	return plaintext, nil
 }
 
 func decompressChunkData(data []byte, compression string) ([]byte, error) {

@@ -151,7 +151,7 @@ mcap-encrypt encrypt  --key <pub.pem> [--key <pub2.pem>...] [--metadata plaintex
 mcap-encrypt decrypt  --key <priv.pem> [--force] <input.mcap> <output.mcap>
 mcap-encrypt rotate   --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
 mcap-encrypt inspect  <input.mcap>
-mcap-encrypt bridge   --key <priv.pem> [--addr <host:port>] <encrypted.mcap>
+mcap-encrypt bridge   --key <priv.pem> [--addr <host:port>] [--streaming] <encrypted.mcap>
 ```
 
 ### keygen
@@ -199,6 +199,8 @@ Prints file metadata (encryption status, format version, file ID, chunk count, r
 ### bridge
 
 Decrypts to memory, serves over the Foxglove WebSocket protocol. Connect Foxglove Studio to `ws://localhost:8765`. No persistent decrypted file on disk. See [docs/foxglove.md](docs/foxglove.md) for the full walkthrough and comparison with `foxglove-bridge`.
+
+Add `--streaming` to decrypt chunks on demand instead of loading the full file. This trades a small per-subscription latency for RAM that is bounded by a fixed-size chunk cache rather than the file size. The on-the-wire ws-protocol is identical; Foxglove Studio sees no difference.
 
 ---
 
@@ -369,7 +371,7 @@ Decrypt is slower because it decompresses and rebuilds a fully-indexed MCAP from
 | `rotate` re-wraps the same DEK; to replace the key itself, decrypt then re-encrypt | `mcap-encrypt decrypt ... && mcap-encrypt encrypt ...` |
 | Input must be a chunked MCAP | Re-encode with chunking enabled (Foxglove CLI and most writers do this by default) |
 | `EncryptStream` spools input to a temp file (two passes); peak RAM is O(1 chunk) but disk usage is proportional to input size | Use file-based `Encrypt`/`EncryptMulti` if temp disk overhead is not acceptable |
-| Bridge loads the decrypted file into memory; the bridge hard-rejects input files larger than 5 GiB | Use `decrypt` to produce a standard file and open it in Foxglove Studio directly |
+| Bridge (default mode) loads the decrypted file into memory; the bridge hard-rejects input files larger than 5 GiB | Pass `--streaming` to decrypt chunks on demand (lower RAM, bounded by an in-process LRU cache), or use `decrypt` to write a plaintext MCAP and open it in Foxglove Studio directly |
 | TypeScript: in-memory only; no LZ4 source support | Use the Go CLI for large files or LZ4 sources |
 
 ---
