@@ -320,6 +320,23 @@ Server-side only. Requires libsodium via `pynacl`. Full API reference: [docs/api
 
 ---
 
+## Why not just use age, GPG, or envelope encryption?
+
+| Approach | Works on MCAP today? | Studio can scrub the timeline without a key? | Multi-recipient? | Re-key without re-encrypt? |
+|---|---|---|---|---|
+| `age`-encrypted MCAP file | Yes, but the whole file is opaque | No, the file is one ciphertext blob | Yes (age recipients) | No |
+| GPG-encrypted MCAP file | Yes, but the whole file is opaque | No | Yes | No |
+| Manual envelope encryption (encrypt each topic) | Custom code per project | No, schemas and timestamps need a key too | DIY | DIY |
+| `mcap-encrypt` | Native, drop-in | Yes, ChunkIndex stays in the clear | Yes (RSA + X25519 mix) | Yes (`rotate`) |
+
+The trade is explicit: `mcap-encrypt` keeps topic names, timestamps, and
+schemas readable so MCAP tooling (Foxglove Studio, the `mcap` CLI, third-
+party readers) keeps working. Encrypt the whole file with `age` if you
+need to hide everything including the timeline, and accept that no MCAP
+tool can route by topic without a key.
+
+---
+
 ## Security model
 
 | Layer | Algorithm | Purpose |
@@ -352,7 +369,7 @@ This project has not been externally audited. Do not use it as the only protecti
 
 ## Performance
 
-Benchmarks on **Apple M3** (arm64), Go 1.24, zstd compression.
+Benchmarks on **Apple M3** (arm64), Go 1.26, zstd compression.
 
 | Scenario | File size | Encrypt | Decrypt |
 |---|---|---|---|
@@ -419,7 +436,7 @@ cd py && pip install -e ".[dev]" && pytest             # Python
 cd ts && npm run test:interop                          # cross-language interop
 ```
 
-Test counts: 85+ Go, 83 TypeScript, 43 Python (39 unit + 4 interop), 4 fuzz targets, 8 Go/TypeScript interop tests.
+Test counts: 85+ Go, 83 TypeScript, 48 Python (44 unit + 4 interop), 4 Go fuzz targets, 5 Python Hypothesis fuzz targets, 8 Go/TypeScript interop tests.
 
 ---
 

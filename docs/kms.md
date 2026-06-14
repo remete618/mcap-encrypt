@@ -51,12 +51,8 @@ regions and accounts.
 
 ### 2. Export the public key
 
-The encrypt path runs locally and needs an SPKI PEM file. Two options:
-
-**Option A: use the CLI helper (when the host has KMS access).** Not yet
-implemented; see `kms.Decrypter.PublicKey` if you want to write one.
-
-**Option B: use the AWS CLI.**
+The encrypt path runs locally and needs an SPKI PEM file. The AWS CLI plus
+OpenSSL produces a standard PKIX `SubjectPublicKeyInfo` PEM block:
 
 ```bash
 aws kms get-public-key \
@@ -67,6 +63,11 @@ aws kms get-public-key \
 
 openssl pkey -pubin -inform DER -in kms.pub.der -out kms.pub.pem
 ```
+
+A dedicated `mcap-encrypt kms export-public-key --kms aws:<arn>` helper that
+wraps the same call is planned but not yet shipped; the `kms.Decrypter`
+interface exposes `PublicKey(ctx) ([]byte, error)` if a downstream caller
+wants to wire it directly today.
 
 `kms.pub.pem` now contains a standard PKIX SubjectPublicKeyInfo PEM block
 that you can feed to `mcap-encrypt encrypt --key kms.pub.pem ...`.
