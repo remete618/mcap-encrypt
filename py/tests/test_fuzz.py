@@ -8,15 +8,32 @@ Mirrors the Go fuzz targets in ``pkg/mcapencrypt/fuzz_test.go``:
 - ``FuzzStreamDecrypt``              -> ``test_fuzz_decrypt_pipeline``
 
 The Go suite found three input-validation bugs (INT-2025-001/002/003); these
-harnesses cover the equivalent Python entry points. Each test treats any
-documented exception (ValueError, IndexError, struct.error, KeyError,
+harnesses cover the equivalent Python entry points. Each test treats only the
+documented "well-behaved parser" exceptions (ValueError, struct.error,
 UnicodeDecodeError, cryptography.exceptions.*, decompression errors, OSError)
-as expected. Any other exception, including AssertionError, OverflowError,
-SystemError, MemoryError, or TypeError, is allowed to propagate so Hypothesis
-reports it as a finding.
+as expected. Notably, IndexError and KeyError are NOT in the expected set:
+in parser code those usually indicate a missing bounds check, and the parser
+SHOULD raise ValueError on short or malformed input. Any other exception,
+including AssertionError, OverflowError, SystemError, MemoryError, TypeError,
+IndexError, or KeyError, is allowed to propagate so Hypothesis reports it as
+a finding.
 
-Failing examples are persisted by Hypothesis under ``.hypothesis/`` for
-regression replay on subsequent runs (the directory is gitignored).
+Regression-seed workflow
+------------------------
+If a fuzz test fails, Hypothesis writes the failing example to
+``.hypothesis/examples/``. To commit it as a regression seed:
+
+1. Copy the failing example file to
+   ``py/tests/fuzz_regressions/<target_name>/`` (one subdirectory per
+   fuzz target, e.g. ``fuzz_regressions/test_fuzz_decode_encrypted_chunk/``).
+2. ``py/tests/fuzz_regressions/`` is exempted from the ``.hypothesis``
+   gitignore via ``!py/tests/fuzz_regressions/**`` so seeds checked into
+   that subdirectory ARE tracked by git.
+3. The seed replays on every test run via ``@example`` (add the literal
+   bytes to the corresponding ``@example`` decorator on the fuzz target,
+   or load them from the file in a setup hook).
+
+This mirrors the Go corpus workflow under ``pkg/mcapencrypt/testdata/fuzz/``.
 """
 from __future__ import annotations
 
@@ -37,11 +54,11 @@ from mcap_encrypt.decrypt import (
 
 
 # Exceptions a well-behaved parser may legitimately raise on hostile input.
-# Anything outside this tuple is a finding.
+# Anything outside this tuple is a finding. IndexError and KeyError are
+# DELIBERATELY excluded: in parser code they almost always indicate a missing
+# bounds check, and the parser should raise ValueError instead.
 _EXPECTED_PARSER_EXC: tuple[type[BaseException], ...] = (
     ValueError,
-    IndexError,
-    KeyError,
     UnicodeDecodeError,
     struct.error,
     _crypto_exc.InvalidKey,
