@@ -322,10 +322,10 @@ func writeAttachmentAAD(outDir string) error {
 		vectors = append(vectors, entry{
 			Description: c.desc,
 			Inputs: map[string]any{
-				"file_id_hex":   hex.EncodeToString(fileID),
-				"name":          c.in.name,
-				"media_type":    c.in.mediaType,
-				"log_time_ns":   c.in.logTime,
+				"file_id_hex":    hex.EncodeToString(fileID),
+				"name":           c.in.name,
+				"media_type":     c.in.mediaType,
+				"log_time_ns":    c.in.logTime,
 				"create_time_ns": c.in.createTime,
 			},
 			Output: hex.EncodeToString(out),
@@ -398,8 +398,8 @@ func writeMetadataAAD(outDir string) error {
 			},
 			Output: hex.EncodeToString(out),
 			Notes: map[string]any{
-				"serialization_encrypt":      "flags=0x00: file_id(16) || u32 LE len + name utf8",
-				"serialization_encrypt_all":  "flags=0x01: file_id(16)  -- name is in ciphertext, not AAD",
+				"serialization_encrypt":     "flags=0x00: file_id(16) || u32 LE len + name utf8",
+				"serialization_encrypt_all": "flags=0x01: file_id(16)  -- name is in ciphertext, not AAD",
 			},
 		})
 	}
@@ -636,4 +636,3 @@ func writeMetadataAEAD(outDir string) error {
 	}
 	return writeJSON(outDir, "metadata_aead.json", vf)
 }
-
