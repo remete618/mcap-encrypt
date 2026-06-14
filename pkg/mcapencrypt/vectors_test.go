@@ -9,12 +9,14 @@ package mcapencrypt
 // version and update the JSON files explicitly.
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -44,8 +46,14 @@ func loadVectorFile(t *testing.T, name string) vectorFile {
 	path := filepath.Join(vectorsDir, name)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err, "read %s", path)
+	// UseNumber keeps integers as json.Number strings so values larger than
+	// float64's 52-bit mantissa (e.g. uint64 max) round-trip exactly. Without
+	// it, uint64(float64(0xFFFFFFFFFFFFFFFF)) is undefined behavior and
+	// differs between macOS and Linux Go builds.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	var vf vectorFile
-	require.NoError(t, json.Unmarshal(data, &vf), "parse %s", path)
+	require.NoError(t, dec.Decode(&vf), "parse %s", path)
 	require.NotEmpty(t, vf.Vectors, "no vectors in %s", path)
 	return vf
 }
@@ -57,6 +65,34 @@ func hexInput(t *testing.T, e vectorEntry, key string) []byte {
 	b, err := hex.DecodeString(v)
 	require.NoError(t, err, "decode hex input %q", key)
 	return b
+}
+
+// mapUint64 reads an unsigned integer from a JSON map value populated by a
+// decoder running with UseNumber. The float64 branch survives so vectors
+// without UseNumber (e.g. produced by external tooling) still work.
+func mapUint64(t *testing.T, m map[string]interface{}, key string) uint64 {
+	t.Helper()
+	v, ok := m[key]
+	require.True(t, ok, "missing %q", key)
+	switch n := v.(type) {
+	case json.Number:
+		u, err := strconv.ParseUint(string(n), 10, 64)
+		require.NoError(t, err, "parse %q as uint64", n)
+		return u
+	case float64:
+		return uint64(n)
+	case string:
+		u, err := strconv.ParseUint(n, 10, 64)
+		require.NoError(t, err, "parse %q as uint64", n)
+		return u
+	default:
+		t.Fatalf("%q has unexpected type %T", key, v)
+		return 0
+	}
+}
+
+func mapUint32(t *testing.T, m map[string]interface{}, key string) uint32 {
+	return uint32(mapUint64(t, m, key))
 }
 
 func uint64Input(t *testing.T, e vectorEntry, key string) uint64 {
@@ -71,9 +107,10 @@ func uint64Input(t *testing.T, e vectorEntry, key string) uint64 {
 		// the same bit pattern via uint64(float64(...))). We accept that.
 		return uint64(n)
 	case json.Number:
-		u, err := n.Int64()
-		require.NoError(t, err)
-		return uint64(u)
+		// Use string form so we can parse values above int64 max via strconv.
+		u, err := strconv.ParseUint(string(n), 10, 64)
+		require.NoError(t, err, "parse %q as uint64", n)
+		return u
 	case string:
 		var u uint64
 		_, err := fmt.Sscanf(n, "%d", &u)
@@ -212,13 +249,13 @@ func testVectorsChunkAEAD(t *testing.T) {
 			require.NoError(t, err)
 			liveAAD := chunkAAD(
 				fileID,
-				uint64(fields["chunk_index"].(float64)),
+				mapUint64(t, fields, "chunk_index"),
 				fields["slot_id"].(string),
 				fields["compression"].(string),
-				uint64(fields["uncompressed_size"].(float64)),
-				uint32(fields["uncompressed_crc"].(float64)),
-				uint64(fields["message_start_ns"].(float64)),
-				uint64(fields["message_end_ns"].(float64)),
+				mapUint64(t, fields, "uncompressed_size"),
+				mapUint32(t, fields, "uncompressed_crc"),
+				mapUint64(t, fields, "message_start_ns"),
+				mapUint64(t, fields, "message_end_ns"),
 			)
 			require.Equal(t, aadFromFile, liveAAD, "live chunkAAD must match aad_hex in vector")
 
@@ -254,8 +291,8 @@ func testVectorsAttachmentAEAD(t *testing.T) {
 				fileID,
 				fields["name"].(string),
 				fields["media_type"].(string),
-				uint64(fields["log_time_ns"].(float64)),
-				uint64(fields["create_time_ns"].(float64)),
+				mapUint64(t, fields, "log_time_ns"),
+				mapUint64(t, fields, "create_time_ns"),
 			)
 			require.Equal(t, aadFromFile, liveAAD, "live attachmentAAD must match aad_hex in vector")
 
