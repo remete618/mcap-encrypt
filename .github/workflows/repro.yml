@@ -1,0 +1,152 @@
+name: Reproducible build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  double-build:
+    name: Double-build hash check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify go.mod is tidy (drift would dirty release builds)
+        # If "go mod tidy" changes anything during a release build, Go embeds
+        # vcs.modified=true into the binary and the "+dirty" pseudo-version
+        # into runtime/debug.BuildInfo, breaking reproducibility. Gate this
+        # in CI rather than letting GoReleaser silently dirty the tree.
+        run: |
+          set -euo pipefail
+          cp go.mod go.mod.orig
+          cp go.sum go.sum.orig
+          go mod tidy
+          if ! diff -q go.mod.orig go.mod >/dev/null || ! diff -q go.sum.orig go.sum >/dev/null; then
+            echo "::error::go.mod / go.sum are not tidy. Run 'go mod tidy' locally and commit."
+            diff -u go.mod.orig go.mod || true
+            diff -u go.sum.orig go.sum || true
+            exit 1
+          fi
+          rm go.mod.orig go.sum.orig
+
+      - name: Resolve version string
+        id: ver
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "${REF_TYPE}" = "tag" ] && [[ "${REF_NAME}" == v* ]]; then
+            VERSION="${REF_NAME#v}"
+          else
+            VERSION="repro-check"
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Using version=${VERSION}"
+
+      # Build outputs go to ${RUNNER_TEMP}, not into the workspace, so that
+      # untracked output files do not flip Go's vcs.modified=true bit and
+      # change the resulting binary bytes.
+      - name: Build #1 (linux/amd64, release flags)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/repro"
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "${RUNNER_TEMP}/repro/mcap-encrypt-1" \
+              ./cmd/mcap-encrypt
+
+      - name: Clear build cache between builds
+        # Forces build #2 to recompile from sources rather than reuse the
+        # build #1 cache. A cached result trivially matches itself; this
+        # makes the comparison meaningful.
+        run: go clean -cache
+
+      - name: Build #2 (linux/amd64, release flags)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "${RUNNER_TEMP}/repro/mcap-encrypt-2" \
+              ./cmd/mcap-encrypt
+
+      - name: Compare SHA-256 of both builds
+        run: |
+          set -euo pipefail
+          H1="$(sha256sum "${RUNNER_TEMP}/repro/mcap-encrypt-1" | awk '{print $1}')"
+          H2="$(sha256sum "${RUNNER_TEMP}/repro/mcap-encrypt-2" | awk '{print $1}')"
+          echo "build #1 SHA-256: ${H1}"
+          echo "build #2 SHA-256: ${H2}"
+          if [ "${H1}" != "${H2}" ]; then
+            echo "::error::Reproducibility check failed: two builds at the same commit produced different binaries."
+            exit 1
+          fi
+          echo "Reproducible: byte-identical (${H1})."
+
+      - name: Verify against published checksum (tag only)
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          ASSET="mcap-encrypt_${VERSION}_linux_amd64.tar.gz"
+          DL_DIR="${RUNNER_TEMP}/published"
+          mkdir -p "${DL_DIR}"
+
+          # The release may not be uploaded yet when this workflow reaches
+          # the tag step (the release workflow runs in parallel). Retry briefly.
+          for attempt in 1 2 3 4 5 6; do
+            if gh release download "${TAG}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --pattern "${ASSET}" \
+                --pattern "checksums.txt" \
+                --dir "${DL_DIR}" \
+                --clobber; then
+              break
+            fi
+            echo "Release assets not ready (attempt ${attempt}); sleeping 30s..."
+            sleep 30
+          done
+
+          echo "Published checksums.txt entry for ${ASSET}:"
+          grep "  ${ASSET}\$" "${DL_DIR}/checksums.txt" || {
+            echo "::error::Expected entry for ${ASSET} not found in checksums.txt"
+            exit 1
+          }
+
+          # Verify the published archive matches its published hash.
+          ( cd "${DL_DIR}" && sha256sum --check --ignore-missing checksums.txt )
+
+          # Extract the published binary and hash it.
+          tar -xzf "${DL_DIR}/${ASSET}" -C "${DL_DIR}" mcap-encrypt
+          PUB_HASH="$(sha256sum "${DL_DIR}/mcap-encrypt" | awk '{print $1}')"
+          LOCAL_HASH="$(sha256sum "${RUNNER_TEMP}/repro/mcap-encrypt-1" | awk '{print $1}')"
+
+          echo "published binary SHA-256: ${PUB_HASH}"
+          echo "local    binary SHA-256: ${LOCAL_HASH}"
+
+          if [ "${PUB_HASH}" != "${LOCAL_HASH}" ]; then
+            echo "::error::Published linux/amd64 binary hash does not match a fresh build of the same commit."
+            exit 1
+          fi
+          echo "Published linux/amd64 binary is byte-identical to a fresh local build."

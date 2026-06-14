@@ -2,7 +2,11 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    # Do NOT use "go mod tidy" here: it mutates go.mod/go.sum during a release
+    # if anything has drifted, which dirties the working tree and embeds
+    # vcs.modified=true (and the "+dirty" pseudo-version) into the binary,
+    # breaking reproducibility. Tidy drift is enforced separately in CI.
+    - go mod download
 
 builds:
   - id: mcap-encrypt
