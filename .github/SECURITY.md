@@ -199,11 +199,14 @@ All tests run on every CI push (`go test -race -count=1 ./...`).
 - `FuzzDecodeWrappedKeyData`
 - `FuzzStreamDecrypt` (found INT-2025-001, INT-2025-002, INT-2025-003)
 
-### TypeScript: 80 unit tests
+### TypeScript: 83 unit tests
 
 Covers RSA-4096 and X25519 key wrapping, KDF test vector (HKDF-SHA-256 output anchored against the Go reference), full AAD field tamper parity with Go (chunkAAD unit tests + end-to-end splice tests for all mutable fields + fileId tamper + chunk reordering), encrypted attachment round-trip and tamper rejection, key rotation (round-trip, old key rejected, multi-recipient, non-encrypted rejection, X25519 rotation), warn callback (fires on malformed key attachment slots and to stay silent on clean decrypts), and metadata encryption round-trip and tamper rejection (encrypt and encrypt-all modes), and format compatibility with the Go implementation.
 
-### Python: 37 tests (33 unit + 4 interop; interop skipped when Go binary is absent)
+### Python: 48 tests (44 unit + 4 interop; interop skipped when Go binary is absent)
+
+Includes a Hypothesis-based fuzz suite covering five parser entry points
+(`_decode_encrypted_chunk`, `_decode_encrypted_attachment`, `_decode_encrypted_metadata`, `WrappedKeyData.decode`, full `decrypt_mcap` pipeline) with 200 examples per target. `IndexError` and `KeyError` are explicitly excluded from the expected-exception set so any bounds-check regression surfaces as a finding.
 
 Covers RSA-4096 and X25519 key wrapping, full encrypt/decrypt round-trip, inspect (no key required), key rotation (round-trip and multi-recipient), streaming message iteration, and metadata encryption (plaintext default, encrypt, encrypt-all modes, tamper rejection, invalid mode error). The 4 interop tests verify Go-encrypts/Python-decrypts and Python-encrypts/Go-decrypts for both RSA and X25519 recipients.
 
