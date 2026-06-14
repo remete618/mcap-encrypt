@@ -26,6 +26,12 @@ MCAP is the native format for [Foxglove Studio](https://foxglove.dev/studio) and
 
 For a plain-English summary for security buyers, see [Security limitations](docs/security-limitations.md).
 
+### Who actually uses this
+
+- **OEM ships a recording to a Tier-1 supplier for analysis.** OEM encrypts with `--key supplier.pub.pem`, the supplier decrypts and explores in Foxglove Studio via the bridge. The OEM never hands over raw sensor data.
+- **Fleet operator shares an incident bag with an external safety analyst.** Operator encrypts with both the in-house key and the analyst's key (multi-recipient). When the analyst's engagement ends, `rotate --new-key in-house.pub.pem` drops their access without re-encrypting chunk data.
+- **Logs land in S3 from a robot fleet; the unwrap key lives in AWS KMS.** Robots encrypt with the KMS-backed public key (`docs/kms.md`). The private key never leaves the HSM. Decrypt at ingest with `mcap-encrypt decrypt --kms aws:<arn> ...`.
+
 ---
 
 ## What it does

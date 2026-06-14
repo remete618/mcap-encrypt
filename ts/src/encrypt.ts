@@ -28,6 +28,7 @@ import {
   encryptAttachmentData,
   encodeEncryptedAttachment,
   parseAttachmentFields,
+  encodeAttachment,
 } from "./attachment.js";
 import {
   wrapSymmetricKey,
@@ -95,24 +96,6 @@ function parseStandardChunk(data: Uint8Array): {
   const compressedSize = r.readUint64();
   const records = new Uint8Array(r.readBytes(safeBigintToNumber(compressedSize, "compressed size")));
   return { messageStartTime, messageEndTime, uncompressedSize, uncompressedCrc, compression, records };
-}
-
-function encodeAttachment(
-  logTime: bigint,
-  createTime: bigint,
-  name: string,
-  mediaType: string,
-  data: Uint8Array,
-): Uint8Array {
-  const w = new BinaryWriter();
-  w.writeUint64(logTime);
-  w.writeUint64(createTime);
-  w.writeString(name);
-  w.writeString(mediaType);
-  w.writeUint64(BigInt(data.length));
-  w.writeBytes(data);
-  w.writeUint32(0); // crc = 0
-  return w.toUint8Array();
 }
 
 export interface EncryptMcapOptions {

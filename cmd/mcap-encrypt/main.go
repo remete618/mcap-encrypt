@@ -89,6 +89,7 @@ Commands:
 
 func main() {
 	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "error: no command given")
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(1)
 	}
@@ -96,6 +97,8 @@ func main() {
 	switch os.Args[1] {
 	case "version", "--version", "-v":
 		fmt.Println("mcap-encrypt", version)
+	case "help", "--help", "-h":
+		fmt.Print(usage)
 	case "keygen":
 		runKeygen(os.Args[2:])
 	case "encrypt":

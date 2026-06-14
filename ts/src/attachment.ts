@@ -105,3 +105,23 @@ export function parseAttachmentFields(data: Uint8Array): {
   const attData = new Uint8Array(r.readBytes(safeBigintToNumber(dataSize, "attachment data size")));
   return { name, mediaType, logTime, createTime, attData };
 }
+
+// encodeAttachment writes an MCAP Attachment record payload (without the
+// outer opcode + length header). CRC is written as 0 (not computed).
+export function encodeAttachment(
+  logTime: bigint,
+  createTime: bigint,
+  name: string,
+  mediaType: string,
+  data: Uint8Array,
+): Uint8Array {
+  const w = new BinaryWriter();
+  w.writeUint64(logTime);
+  w.writeUint64(createTime);
+  w.writeString(name);
+  w.writeString(mediaType);
+  w.writeUint64(BigInt(data.length));
+  w.writeBytes(data);
+  w.writeUint32(0); // crc = 0
+  return w.toUint8Array();
+}
