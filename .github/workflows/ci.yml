@@ -168,8 +168,12 @@ jobs:
           cache: true
 
       - name: Fuzz parser surface
+        # -timeout is set well above -fuzztime so the cleanup phase has time
+        # to write coverage data without hitting "context deadline exceeded"
+        # at the boundary; the Go fuzz harness occasionally reports the
+        # deadline as a FAIL even when no finding was triggered.
         run: |
           for t in FuzzDecodeEncryptedChunk FuzzDecodeEncryptedAttachment FuzzDecodeWrappedKeyData FuzzStreamDecrypt; do
             echo "== $t =="
-            go test -run='^$' -fuzz="^${t}$" -fuzztime=30s ./pkg/mcapencrypt
+            go test -run='^$' -fuzz="^${t}$" -fuzztime=30s -timeout=2m ./pkg/mcapencrypt
           done
