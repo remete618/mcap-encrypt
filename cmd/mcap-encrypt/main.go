@@ -14,7 +14,27 @@ import (
 	"time"
 
 	"github.com/remete618/mcap-encrypt/pkg/mcapencrypt"
+	"github.com/remete618/mcap-encrypt/pkg/mcapencrypt/kms"
 )
+
+// resolveKMSDecrypter parses a --kms URI ("aws:<arn>") and returns the
+// corresponding Decrypter. Currently only the "aws:" scheme is implemented.
+// Returns (nil, nil) when uri is empty so callers can branch on presence.
+func resolveKMSDecrypter(ctx context.Context, uri string) (kms.Decrypter, error) {
+	if uri == "" {
+		return nil, nil
+	}
+	switch {
+	case strings.HasPrefix(uri, "aws:"):
+		arn := strings.TrimPrefix(uri, "aws:")
+		if arn == "" {
+			return nil, fmt.Errorf("--kms aws: requires an ARN (e.g. aws:arn:aws:kms:us-east-1:111122223333:key/abcd-...)")
+		}
+		return kms.NewAWS(ctx, arn)
+	default:
+		return nil, fmt.Errorf("unsupported --kms scheme in %q (supported: aws:<arn>)", uri)
+	}
+}
 
 var version = "dev"
 
@@ -23,10 +43,16 @@ const usage = `mcap-encrypt: encrypt and decrypt MCAP files with XChaCha20-Poly1
 Usage:
   mcap-encrypt keygen   --out <basename>
   mcap-encrypt encrypt  --key <pub.pem> [--key <pub2.pem>...] [--metadata plaintext|encrypt|encrypt-all] [--force] <input.mcap> <output.mcap>
-  mcap-encrypt decrypt  --key <priv.pem> [--force] <input.mcap> <output.mcap>
-  mcap-encrypt rotate   --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+  mcap-encrypt decrypt  (--key <priv.pem> | --kms <uri>) [--force] <input.mcap> <output.mcap>
+  mcap-encrypt rotate   (--old-key <priv.pem> | --old-kms <uri>) --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
   mcap-encrypt inspect  <input.mcap>
-  mcap-encrypt bridge   --key <priv.pem> [--addr <host:port>] [--streaming] <encrypted.mcap>
+  mcap-encrypt bridge   (--key <priv.pem> | --kms <uri>) [--addr <host:port>] [--streaming] <encrypted.mcap>
+
+KMS URIs:
+  aws:<arn>   AWS KMS asymmetric RSA-4096 ENCRYPT_DECRYPT key.
+              Example: --kms aws:arn:aws:kms:us-east-1:111122223333:key/abcd-...
+              Credentials and region follow the default AWS SDK chain.
+              See docs/kms.md for setup details.
 
 Commands:
   keygen   Generate an RSA-4096 key pair.
@@ -35,16 +61,18 @@ Commands:
   encrypt  Encrypt an MCAP file. Each chunk is encrypted with XChaCha20-Poly1305.
            Repeat --key to encrypt for multiple recipients; any private key decrypts.
            Supports RSA-4096 and X25519 public keys (single-pass, streaming).
+           For KMS recipients, fetch the public key first ('aws kms get-public-key').
            Press Ctrl-Z to pause, fg to resume.
 
-  decrypt  Decrypt an encrypted MCAP file using the private key.
-           Supports RSA and X25519 private keys.
+  decrypt  Decrypt an encrypted MCAP file using the private key OR a KMS service.
+           --key for on-disk RSA / X25519 private keys.
+           --kms for KMS-backed unwrap (private key stays in the HSM).
            Outputs a standard, fully-indexed MCAP file.
            Press Ctrl-Z to pause, fg to resume.
 
   rotate   Re-wrap the symmetric key for a new set of recipients without decrypting
            any chunk data. O(file size) I/O with zero message decryption.
-           --old-key: the private key that can currently decrypt the file.
+           --old-key or --old-kms: the key/service that can currently decrypt the file.
            --new-key: one or more public keys for the new recipient set (repeatable).
            Press Ctrl-Z to pause, fg to resume.
 
@@ -53,7 +81,7 @@ Commands:
            key fingerprints and algorithms. No private key required.
 
   bridge   Start a Foxglove WebSocket bridge for an encrypted MCAP file.
-           Decrypts in memory and serves over the Foxglove ws-protocol.
+           Decrypts in memory (via --key or --kms) and serves over the Foxglove ws-protocol.
            Open Foxglove Studio and connect to ws://<addr> (default localhost:8765).
            Press Ctrl-C to stop.
            --streaming: decrypt chunks on demand (lower RAM, experimental).
@@ -359,14 +387,15 @@ func runEncrypt(args []string) {
 func runDecrypt(args []string) {
 	fs := flag.NewFlagSet("decrypt", flag.ExitOnError)
 	key := fs.String("key", "", "path to RSA-4096 or X25519 private key (.priv.pem)")
+	kmsURI := fs.String("kms", "", "KMS URI (e.g. aws:arn:aws:kms:...); mutually exclusive with --key")
 	force := fs.Bool("force", false, "overwrite output file if it exists")
 	_ = fs.Parse(args)
 
-	if *key == "" {
-		fatal(fmt.Errorf("--key is required"))
+	if (*key == "" && *kmsURI == "") || (*key != "" && *kmsURI != "") {
+		fatal(fmt.Errorf("exactly one of --key or --kms is required"))
 	}
 	if fs.NArg() != 2 {
-		fatal(fmt.Errorf("usage: decrypt --key <priv.pem> <input.mcap> <output.mcap>"))
+		fatal(fmt.Errorf("usage: decrypt (--key <priv.pem> | --kms <uri>) <input.mcap> <output.mcap>"))
 	}
 	input, output := fs.Arg(0), fs.Arg(1)
 
@@ -375,6 +404,31 @@ func runDecrypt(args []string) {
 	} else if _, statErr := os.Stat(output); statErr == nil {
 		fatal(fmt.Errorf("output file %q already exists (use --force to overwrite)", output))
 	}
+
+	if *kmsURI != "" {
+		fmt.Printf("decrypting via KMS: %s\n", input)
+		ctx := context.Background()
+		dec, err := resolveKMSDecrypter(ctx, *kmsURI)
+		if err != nil {
+			fatal(err)
+		}
+		inputSize := fileSize(input)
+		var progressBytes atomic.Int64
+		stop := startProgress("decrypting", inputSize, &progressBytes)
+		start := time.Now()
+		err = mcapencrypt.DecryptFileWithKMS(ctx, input, output, dec, func(n int64) {
+			progressBytes.Store(n)
+		})
+		close(stop)
+		elapsed := time.Since(start)
+		if err != nil {
+			os.Remove(output)
+			fatal(err)
+		}
+		fmt.Printf("done  %.2fs%s\n", elapsed.Seconds(), formatThroughput(output, elapsed))
+		return
+	}
+
 	warnIfInsecureKeyPerms(*key)
 	fmt.Printf("decrypting: %s\n", input)
 
@@ -398,27 +452,22 @@ func runDecrypt(args []string) {
 func runRotate(args []string) {
 	fs := flag.NewFlagSet("rotate", flag.ExitOnError)
 	oldKey := fs.String("old-key", "", "path to the current private key (.priv.pem) that can decrypt the file")
+	oldKMS := fs.String("old-kms", "", "KMS URI (e.g. aws:arn:aws:kms:...); mutually exclusive with --old-key")
 	var newKeys stringList
 	fs.Var(&newKeys, "new-key", "path to a new recipient public key (.pub.pem); repeat for multiple recipients")
 	force := fs.Bool("force", false, "overwrite output file if it exists")
 	_ = fs.Parse(args)
 
-	if *oldKey == "" {
-		fatal(fmt.Errorf("--old-key is required"))
+	if (*oldKey == "" && *oldKMS == "") || (*oldKey != "" && *oldKMS != "") {
+		fatal(fmt.Errorf("exactly one of --old-key or --old-kms is required"))
 	}
 	if len(newKeys) == 0 {
 		fatal(fmt.Errorf("--new-key is required (at least one)"))
 	}
 	if fs.NArg() != 2 {
-		fatal(fmt.Errorf("usage: rotate --old-key <priv.pem> --new-key <pub.pem> <input.mcap> <output.mcap>"))
+		fatal(fmt.Errorf("usage: rotate (--old-key <priv.pem> | --old-kms <uri>) --new-key <pub.pem> <input.mcap> <output.mcap>"))
 	}
 	input, output := fs.Arg(0), fs.Arg(1)
-
-	warnIfInsecureKeyPerms(*oldKey)
-	oldPrivPEM, err := os.ReadFile(*oldKey)
-	if err != nil {
-		fatal(fmt.Errorf("read old private key: %w", err))
-	}
 
 	newPubPEMs := make([]string, len(newKeys))
 	for i, path := range newKeys {
@@ -439,6 +488,31 @@ func runRotate(args []string) {
 	if len(newKeys) > 1 {
 		recipientNote = fmt.Sprintf(" (%d new recipients)", len(newKeys))
 	}
+
+	if *oldKMS != "" {
+		fmt.Printf("rotating keys%s via KMS: %s\n", recipientNote, input)
+		ctx := context.Background()
+		dec, err := resolveKMSDecrypter(ctx, *oldKMS)
+		if err != nil {
+			fatal(err)
+		}
+		start := time.Now()
+		err = mcapencrypt.RotateKeyFileWithKMS(ctx, input, output, dec, newPubPEMs)
+		elapsed := time.Since(start)
+		if err != nil {
+			os.Remove(output)
+			fatal(err)
+		}
+		fmt.Printf("done  %.2fs%s\n", elapsed.Seconds(), formatThroughput(output, elapsed))
+		return
+	}
+
+	warnIfInsecureKeyPerms(*oldKey)
+	oldPrivPEM, err := os.ReadFile(*oldKey)
+	if err != nil {
+		fatal(fmt.Errorf("read old private key: %w", err))
+	}
+
 	fmt.Printf("rotating keys%s: %s\n", recipientNote, input)
 
 	start := time.Now()
@@ -500,19 +574,22 @@ func runInspect(args []string) {
 func runBridge(args []string) {
 	fs := flag.NewFlagSet("bridge", flag.ExitOnError)
 	key := fs.String("key", "", "path to RSA-4096 or X25519 private key (.priv.pem)")
+	kmsURI := fs.String("kms", "", "KMS URI (e.g. aws:arn:aws:kms:...); mutually exclusive with --key")
 	addr := fs.String("addr", "localhost:8765", "WebSocket listen address (host:port)")
 	streaming := fs.Bool("streaming", false, "decrypt chunks on demand instead of loading the full file (experimental; lower RAM, no MaxBridgeFileSize cap on file size at load time)")
 	_ = fs.Parse(args)
 
-	if *key == "" {
-		fatal(fmt.Errorf("--key is required"))
+	if (*key == "" && *kmsURI == "") || (*key != "" && *kmsURI != "") {
+		fatal(fmt.Errorf("exactly one of --key or --kms is required"))
 	}
 	if fs.NArg() != 1 {
-		fatal(fmt.Errorf("usage: bridge --key <priv.pem> [--addr <host:port>] [--streaming] <encrypted.mcap>"))
+		fatal(fmt.Errorf("usage: bridge (--key <priv.pem> | --kms <uri>) [--addr <host:port>] [--streaming] <encrypted.mcap>"))
 	}
 	mcapPath := fs.Arg(0)
 
-	warnIfInsecureKeyPerms(*key)
+	if *key != "" {
+		warnIfInsecureKeyPerms(*key)
+	}
 	fmt.Printf("loading: %s\n", mcapPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -527,6 +604,9 @@ func runBridge(args []string) {
 	}()
 
 	if *streaming {
+		if *kmsURI != "" {
+			fatal(fmt.Errorf("--streaming does not support --kms yet; run without --streaming or open an issue to track KMS streaming support"))
+		}
 		stop := startProgress("scanning summary", 0, nil)
 		start := time.Now()
 		state, err := mcapencrypt.LoadStreamingBridgeState(mcapPath, *key)
@@ -551,7 +631,19 @@ func runBridge(args []string) {
 	stop := startProgress("decrypting", 0, nil)
 	start := time.Now()
 
-	state, err := mcapencrypt.LoadBridgeState(mcapPath, *key)
+	var state *mcapencrypt.BridgeState
+	var err error
+	if *kmsURI != "" {
+		ctx := context.Background()
+		dec, derr := resolveKMSDecrypter(ctx, *kmsURI)
+		if derr != nil {
+			close(stop)
+			fatal(derr)
+		}
+		state, err = mcapencrypt.LoadBridgeStateWithKMS(ctx, mcapPath, dec)
+	} else {
+		state, err = mcapencrypt.LoadBridgeState(mcapPath, *key)
+	}
 	close(stop)
 	if err != nil {
 		fatal(err)

@@ -88,10 +88,21 @@ const MaxBridgeFileSize int64 = 5 << 30 // 5 GiB
 // is written to a temporary location and removed after loading. Returns an
 // error if the input file is larger than MaxBridgeFileSize.
 func LoadBridgeState(mcapPath, privKeyPath string) (*BridgeState, error) {
-	return loadBridgeState(mcapPath, privKeyPath)
+	return loadBridgeStateFn(mcapPath, func(in, out string) error {
+		return Decrypt(in, out, privKeyPath)
+	})
 }
 
 func loadBridgeState(mcapPath, privKeyPath string) (*bridgeState, error) {
+	return loadBridgeStateFn(mcapPath, func(in, out string) error {
+		return Decrypt(in, out, privKeyPath)
+	})
+}
+
+// loadBridgeStateFn is the parameterised core: decryptFn takes (input, output)
+// file paths and is free to use any backend (local key, KMS, ...). This keeps
+// the bridge loader oblivious to how the symmetric key was unwrapped.
+func loadBridgeStateFn(mcapPath string, decryptFn func(in, out string) error) (*bridgeState, error) {
 	stat, err := os.Stat(mcapPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat input: %w", err)
@@ -110,11 +121,11 @@ func loadBridgeState(mcapPath, privKeyPath string) (*bridgeState, error) {
 	}
 	tmpPath := tmp.Name()
 	tmp.Close()
-	// Remove the empty temp file so Decrypt can create it at the same path.
+	// Remove the empty temp file so the decryptFn can create it at the same path.
 	os.Remove(tmpPath)
 	defer os.Remove(tmpPath)
 
-	if err := Decrypt(mcapPath, tmpPath, privKeyPath); err != nil {
+	if err := decryptFn(mcapPath, tmpPath); err != nil {
 		return nil, err
 	}
 

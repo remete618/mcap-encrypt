@@ -141,6 +141,10 @@ pip install mcap-encrypt
 
 Requires Python 3.10+.
 
+**AWS KMS backend**
+
+For enterprise deployments where the RSA-4096 private key must stay inside an HSM, `mcap-encrypt` can unwrap via AWS KMS rather than reading the key from disk. The private key never leaves the KMS boundary; only the 32-byte symmetric key returns to the host. See [docs/kms.md](docs/kms.md) for setup, IAM policy, and CLI examples.
+
 ---
 
 ## CLI reference
@@ -148,10 +152,10 @@ Requires Python 3.10+.
 ```
 mcap-encrypt keygen   --out <basename>
 mcap-encrypt encrypt  --key <pub.pem> [--key <pub2.pem>...] [--metadata plaintext|encrypt|encrypt-all] [--force] <input.mcap> <output.mcap>
-mcap-encrypt decrypt  --key <priv.pem> [--force] <input.mcap> <output.mcap>
-mcap-encrypt rotate   --old-key <priv.pem> --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
+mcap-encrypt decrypt  (--key <priv.pem> | --kms <uri>) [--force] <input.mcap> <output.mcap>
+mcap-encrypt rotate   (--old-key <priv.pem> | --old-kms <uri>) --new-key <pub.pem> [--new-key <pub2.pem>...] [--force] <input.mcap> <output.mcap>
 mcap-encrypt inspect  <input.mcap>
-mcap-encrypt bridge   --key <priv.pem> [--addr <host:port>] [--streaming] <encrypted.mcap>
+mcap-encrypt bridge   (--key <priv.pem> | --kms <uri>) [--addr <host:port>] [--streaming] <encrypted.mcap>
 ```
 
 ### keygen
