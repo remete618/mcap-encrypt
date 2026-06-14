@@ -123,4 +123,3 @@ func TestKMSRefusesWrongKEKAlg(t *testing.T) {
 	_, err = fake.Decrypt(context.Background(), "x25519-hkdf-xchacha20poly1305", []byte("anything"))
 	require.Error(t, err)
 }
-

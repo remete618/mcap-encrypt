@@ -1,7 +1,7 @@
 // Package kms defines the Decrypter interface used by mcapencrypt to unwrap
 // the per-file symmetric key via a remote key management service.
 //
-// Background
+// # Background
 //
 // Enterprises typically refuse to keep RSA-4096 private keys on disk. Instead
 // they store the private half in an HSM-backed service (AWS KMS, GCP KMS,
