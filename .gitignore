@@ -10,3 +10,6 @@ py/**/__pycache__/
 py/**/*.pyc
 py/.venv*/
 py/.pytest_cache/
+py/**/.hypothesis/
+.hypothesis/
+!py/tests/fuzz_regressions/**
