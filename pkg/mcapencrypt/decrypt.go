@@ -325,11 +325,14 @@ scan:
 			// decrypt does not depend on slot position. Selection of the
 			// matching key uses crypto/subtle to avoid a secret-dependent
 			// branch. See issue #21.
-			candidate, unwrapErr := unwrap(wkd.KEKAlg, wkd.WrappedKey)
+			//lint:ignore SA4006 slotErr is read in the if statement below;
+			// staticcheck 2025.1.1 false-positives on this pattern inside a
+			// switch case inside a for loop.
+			candidate, slotErr := unwrap(wkd.KEKAlg, wkd.WrappedKey)
 			ok := subtle.ConstantTimeEq(int32(len(candidate)), int32(symKeyLen))
-			if unwrapErr != nil {
+			if slotErr != nil {
 				ok = 0
-				slotErrs = append(slotErrs, fmt.Sprintf("slot #%d: %v", wkaCount, unwrapErr))
+				slotErrs = append(slotErrs, fmt.Sprintf("slot #%d: %v", wkaCount, slotErr))
 			}
 			// Stage candidate and fileID into fixed-size buffers so the
 			// constant-time copy below has length-invariant inputs even when

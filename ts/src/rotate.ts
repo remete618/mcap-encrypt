@@ -30,48 +30,12 @@ import {
   isX25519PublicKeyPem,
   spkiFingerprint,
 } from "./key.js";
+import { encodeAttachment, parseAttachmentFields } from "./attachment.js";
 
 // Additional opcodes for building the summary section.
 const OP_CHUNK_INDEX = 0x08;
 const OP_STATISTICS = 0x0a;
 const OP_SUMMARY_OFFSET = 0x0e;
-
-function encodeAttachment(
-  logTime: bigint,
-  createTime: bigint,
-  name: string,
-  mediaType: string,
-  data: Uint8Array,
-): Uint8Array {
-  const w = new BinaryWriter();
-  w.writeUint64(logTime);
-  w.writeUint64(createTime);
-  w.writeString(name);
-  w.writeString(mediaType);
-  w.writeUint64(BigInt(data.length));
-  w.writeBytes(data);
-  w.writeUint32(0); // crc = 0
-  return w.toUint8Array();
-}
-
-function parseAttachmentFields(data: Uint8Array): {
-  name: string;
-  mediaType: string;
-  logTime: bigint;
-  createTime: bigint;
-  attData: Uint8Array;
-} {
-  const r = new BinaryReader(data);
-  const logTime = r.readUint64();
-  const createTime = r.readUint64();
-  const name = r.readString();
-  const mediaType = r.readString();
-  const dataSize = r.readUint64();
-  const attData = new Uint8Array(
-    r.readBytes(safeBigintToNumber(dataSize, "attachment data size")),
-  );
-  return { name, mediaType, logTime, createTime, attData };
-}
 
 type ChunkIndexMeta = {
   msgStart: bigint;

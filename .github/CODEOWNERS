@@ -1,0 +1,17 @@
+# CODEOWNERS for mcap-encrypt.
+#
+# When a backup maintainer is added, list them here so reviews can fan out.
+# See MAINTAINERS.md for the current roster and decision rules.
+
+*                       @remete618
+
+# Crypto-critical paths require explicit lead-maintainer review even when a
+# backup maintainer exists. Repeat the entry below when more reviewers join.
+/pkg/mcapencrypt/encrypt.go     @remete618
+/pkg/mcapencrypt/decrypt.go     @remete618
+/pkg/mcapencrypt/key.go         @remete618
+/pkg/mcapencrypt/ed25519_x25519.go @remete618
+/pkg/mcapencrypt/kms/           @remete618
+/FORMAT.md                      @remete618
+/.github/SECURITY.md            @remete618
+/testdata/vectors/              @remete618
