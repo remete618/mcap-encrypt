@@ -151,7 +151,8 @@ func writeSummaryAndFooter(w io.Writer, summaryStart int64, pending []pendingRec
 	put64(statsBuf[o:], globalMsgEnd)
 	o += 8
 	put32(statsBuf[o:], 0)
-	o += 4
+	// No `o += 4` here: statsBuf ends at this field, and the increment would be
+	// a dead store. Add it back if another field is appended below.
 	emitRec(opcodeStatistics, statsBuf)
 	groups = append(groups, group{opcodeStatistics, statsStart, summaryStart + written - statsStart})
 
