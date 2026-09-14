@@ -47,11 +47,11 @@
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
-    "@vitest/browser": "^4.1.7",
-    "@vitest/browser-playwright": "^4.1.8",
+    "@vitest/browser": "^4.1.11",
+    "@vitest/browser-playwright": "^4.1.11",
     "playwright": "^1.60.0",
     "typescript": "^5.4.0",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=18"
