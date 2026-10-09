@@ -16,7 +16,6 @@ mcap-encrypt
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/remete618/mcap-encrypt/badge)](https://scorecard.dev/viewer/?uri=github.com/remete618/mcap-encrypt)
 [![FOSSA License](https://app.fossa.com/api/projects/custom%2B62363%2Fgithub.com%2Fremete618%2Fmcap-encrypt.svg?type=shield&issueType=license)](https://app.fossa.com/projects/custom%2B62363%2Fgithub.com%2Fremete618%2Fmcap-encrypt?ref=badge_shield&issueType=license)
 [![FOSSA Security](https://app.fossa.com/api/projects/custom%2B62363%2Fgithub.com%2Fremete618%2Fmcap-encrypt.svg?type=shield&issueType=security)](https://app.fossa.com/projects/custom%2B62363%2Fgithub.com%2Fremete618%2Fmcap-encrypt?ref=badge_shield&issueType=security)
-[![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot)](https://renovatebot.com)
 
 MCAP is the native format for [Foxglove Studio](https://foxglove.dev/studio) and ROS 2. It has excellent tooling but no built-in encryption. `mcap-encrypt` protects chunk payloads with XChaCha20-Poly1305 while keeping schemas, channels, and timestamps readable for routing and inspection without a key.
 
@@ -141,8 +140,10 @@ Requires Node.js 20.19+. Works in modern browsers without polyfills.
 
 **Python**
 
+The package is not on PyPI yet. Install straight from the repository:
+
 ```bash
-pip install mcap-encrypt
+pip install "mcap-encrypt @ git+https://github.com/remete618/mcap-encrypt#subdirectory=py"
 ```
 
 Requires Python 3.10+.
@@ -442,7 +443,7 @@ cd py && pip install -e ".[dev]" && pytest             # Python
 cd ts && npm run test:interop                          # cross-language interop
 ```
 
-Test counts: 85+ Go, 83 TypeScript, 48 Python (44 unit + 4 interop), 4 Go fuzz targets, 5 Python Hypothesis fuzz targets, 8 Go/TypeScript interop tests.
+Test counts: 118 Go, 83 TypeScript, 52 Python (48 unit + 4 interop), 4 Go fuzz targets, 5 Python Hypothesis fuzz targets, 8 Go/TypeScript interop tests.
 
 ---
 
