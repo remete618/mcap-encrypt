@@ -10,7 +10,8 @@
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { hkdf } from "@noble/hashes/hkdf.js";
-import { sha256 } from "@noble/hashes/sha256.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { utf8ToBytes } from "@noble/hashes/utils.js";
 import {
   encryptMcap,
   decryptMcap,
@@ -46,7 +47,7 @@ describe("X25519 KDF test vector", () => {
 
     // salt=undefined → @noble/hashes uses 32 zero bytes (RFC 5869 default),
     // which matches Go's hkdf.New(sha256.New, shared, nil, info).
-    const kek = hkdf(sha256, shared, undefined, "mcap-encrypt x25519 v1", 32);
+    const kek = hkdf(sha256, shared, undefined, utf8ToBytes("mcap-encrypt x25519 v1"), 32);
 
     const expected = new Uint8Array([
       0xce, 0x10, 0x14, 0x08, 0x49, 0x24, 0x09, 0x58,

@@ -137,7 +137,7 @@ Requires Go 1.26+.
 npm install mcap-encrypt
 ```
 
-Requires Node.js 18+. Works in modern browsers without polyfills.
+Requires Node.js 20.19+. Works in modern browsers without polyfills.
 
 **Python**
 
@@ -288,7 +288,7 @@ for await (const { schema, channel, message } of iterateMessages(encrypted, priv
 }
 ```
 
-Works in Node.js 18+ and modern browsers (Web Crypto API, no WASM). Does not support LZ4 source files; use the Go CLI to normalize those first. Full API reference: [docs/api.md](docs/api.md).
+Works in Node.js 20.19+ and modern browsers (Web Crypto API, no WASM). Does not support LZ4 source files; use the Go CLI to normalize those first. Full API reference: [docs/api.md](docs/api.md).
 
 ---
 

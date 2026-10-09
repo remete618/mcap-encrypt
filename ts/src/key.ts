@@ -1,6 +1,7 @@
 import { x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
-import { sha256 } from "@noble/hashes/sha256.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { BinaryReader, BinaryWriter } from "./binary.js";
 
@@ -163,7 +164,7 @@ function x25519Pkcs8DerFromRawPriv(rawPriv: Uint8Array): Uint8Array {
 }
 
 // The HKDF info label must match the Go constant x25519HKDFInfo exactly.
-const X25519_HKDF_INFO = "mcap-encrypt x25519 v1";
+const X25519_HKDF_INFO = utf8ToBytes("mcap-encrypt x25519 v1");
 
 function deriveX25519KEK(shared: Uint8Array): Uint8Array {
   // salt=undefined -> HKDF uses HashLen (32) zero bytes, matching Go hkdf.New(... nil ...)
